@@ -6,8 +6,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 import db
 
-BOT_TOKEN = "8981400502:AAG8zDjlFAg4oWTF--32GZ8QVUEdV7s_keQ"
-ADMIN_ID = 6139301544
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+ADMIN_ID = YOUR_TELEGRAM_ID
 
 CATEGORIES = {
     "📱 Дисплеи": "Дисплеи",
