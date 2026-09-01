@@ -1,0 +1,373 @@
+import asyncio
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
+import db
+
+# ====== НАСТРОЙКИ ======
+BOT_TOKEN = "8981400502:AAG8zDjlFAg4oWTF--32GZ8QVUEdV7s_keQ"
+ADMIN_ID = 6139301544
+
+# ====== КАТЕГОРИИ ЗАПЧАСТЕЙ ======
+CATEGORIES = {
+    "📱 Дисплеи": "Дисплеи",
+    "🔲 Крышки": "Крышки",
+    "🔋 Аккумуляторы": "Аккумуляторы",
+    "📞 Шлейфы iPhone": "Шлейфы iPhone",
+    "🤖 Шлейфы Android": "Шлейфы Android",
+    "📷 Камеры": "Камеры",
+    "🔊 Динамики": "Динамики"
+}
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# ====== СОСТОЯНИЯ ФОРМЫ ======
+class PartState(StatesGroup):
+    category = State()
+    name = State()
+    supplier = State()
+    cost_price = State()
+    retail_price = State()
+    wholesale_price = State()
+
+class StockInState(StatesGroup):
+    category = State()
+    part = State()
+    quantity = State()
+    supplier = State()
+    notes = State()
+
+# ====== ОСНОВНОЕ МЕНЮ ======
+def get_main_menu():
+    """Главное меню с кнопками"""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="📦 Каталог запчастей")
+    builder.button(text="📥 Приходование")
+    if ADMIN_ID:
+        builder.button(text="⚙️ Админ-панель")
+    builder.adjust(2)
+    return builder.as_markup()
+
+def get_admin_menu():
+    """Меню администратора"""
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="➕ Добавить запчасть")
+    builder.button(text="📊 Статистика")
+    builder.button(text="🔙 Назад в меню")
+    builder.adjust(1)
+    return builder.as_markup()
+
+# ====== КОМАНДЫ ======
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    """Команда /start"""
+    db.add_user(message.from_user.id)
+    status = db.get_user_status(message.from_user.id)
+    status_text = "ОПТ 📦" if status == 'wholesale' else "РОЗНИЦА 🛍️"
+    
+    welcome_text = (
+        f"👋 **Добро пожаловать!**\n\n"
+        f"Ваш статус: `{status_text}`\n\n"
+        f"Выберите действие из меню ниже:"
+    )
+    await message.answer(welcome_text, reply_markup=get_main_menu())
+
+# ====== КАТАЛОГ ======
+@dp.message(F.text == "📦 Каталог запчастей")
+async def show_catalog_menu(message: types.Message):
+    """Показать категории запчастей"""
+    builder = InlineKeyboardBuilder()
+    for emoji_name, category in CATEGORIES.items():
+        builder.button(text=emoji_name, callback_data=f"cat_{category}")
+    builder.adjust(2)
+    
+    await message.answer(
+        "🛍️ **Выберите категорию запчастей:**",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("cat_"))
+async def show_parts(callback: types.CallbackQuery):
+    """Показать запчасти по категории"""
+    category = callback.data.split("_", 1)[1]
+    parts = db.get_parts_by_category(category)
+    status = db.get_user_status(callback.from_user.id)
+    
+    if not parts:
+        await callback.message.edit_text(f"⚠️ В категории **{category}** пока нет запчастей.")
+        await callback.answer()
+        return
+    
+    text = f"📦 **Категория: {category}**\n\n"
+    for part_id, name, ret_price, wh_price, qty in parts:
+        price = wh_price if status == 'wholesale' else ret_price
+        text += f"✓ **{name}**\n   Цена: `{price:.0f} руб.` | Кол-во: `{qty} шт`\n\n"
+    
+    text += "_Используйте /help для получения помощи_"
+    await callback.message.edit_text(text)
+    await callback.answer()
+
+# ====== ПРИХОДОВАНИЕ ======
+@dp.message(F.text == "📥 Приходование")
+async def start_stock_in(message: types.Message, state: FSMContext):
+    """Начало процесса приходования запчастей"""
+    builder = InlineKeyboardBuilder()
+    for emoji_name, category in CATEGORIES.items():
+        builder.button(text=emoji_name, callback_data=f"stockin_{category}")
+    builder.adjust(2)
+    
+    await message.answer(
+        "📥 **Выберите категорию для приходования:**",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("stockin_"))
+async def choose_part_for_stock(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор запчасти для приходования"""
+    category = callback.data.split("_", 1)[1]
+    parts = db.get_parts_by_category(category)
+    
+    if not parts:
+        await callback.message.edit_text(
+            f"⚠️ В категории **{category}** нет запчастей.\n"
+            f"Сначала добавьте запчасти через админ-панель."
+        )
+        await callback.answer()
+        return
+    
+    builder = InlineKeyboardBuilder()
+    for part_id, name, _, _, qty in parts:
+        builder.button(text=f"{name} ({qty} шт)", callback_data=f"part_{part_id}")
+    builder.adjust(1)
+    
+    await state.update_data(category=category)
+    await callback.message.edit_text(
+        "📦 **Выберите запчасть:**",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("part_"))
+async def get_quantity_for_stock(callback: types.CallbackQuery, state: FSMContext):
+    """Ввод количества для приходования"""
+    part_id = int(callback.data.split("_", 1)[1])
+    part = db.get_part_by_id(part_id)
+    
+    if not part:
+        await callback.message.edit_text("❌ Запчасть не найдена.")
+        await callback.answer()
+        return
+    
+    await state.update_data(part_id=part_id, part_name=part[1])
+    await callback.message.edit_text(
+        f"📦 **Запчасть:** {part[1]}\n\n"
+        f"Введите количество (целое число):"
+    )
+    await state.set_state(StockInState.quantity)
+    await callback.answer()
+
+@dp.message(StockInState.quantity)
+async def get_supplier_for_stock(message: types.Message, state: FSMContext):
+    """Ввод поставщика"""
+    try:
+        quantity = int(message.text)
+        if quantity <= 0:
+            await message.answer("❌ Количество должно быть больше нуля!")
+            return
+        
+        await state.update_data(quantity=quantity)
+        await message.answer("👤 Введите поставщика (опционально):")
+        await state.set_state(StockInState.supplier)
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите целое число!")
+
+@dp.message(StockInState.supplier)
+async def get_notes_for_stock(message: types.Message, state: FSMContext):
+    """Ввод примечаний"""
+    await state.update_data(supplier=message.text or "Не указан")
+    
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="✅ Завершить")
+    builder.button(text="📝 Добавить примечание")
+    builder.adjust(2)
+    
+    await message.answer(
+        "Хотите добавить примечание?",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(StockInState.notes)
+
+@dp.message(StockInState.notes)
+async def finalize_stock_in(message: types.Message, state: FSMContext):
+    """Завершение приходования"""
+    data = await state.get_data()
+    
+    if message.text == "✅ Завершить":
+        notes = ""
+    elif message.text == "📝 Добавить примечание":
+        await message.answer("Введите примечание:")
+        return
+    else:
+        notes = message.text
+    
+    # Обновляем базу данных
+    db.update_part_quantity(data['part_id'], data['quantity'])
+    db.add_stock_history(data['part_id'], data['quantity'], data['supplier'], notes)
+    
+    await message.answer(
+        f"✅ **Приходование завершено!**\n\n"
+        f"📦 Запчасть: {data['part_name']}\n"
+        f"📊 Кол-во: +{data['quantity']} шт\n"
+        f"👤 Поставщик: {data['supplier']}\n"
+        f"{'📝 Примечание: ' + notes if notes else ''}",
+        reply_markup=get_main_menu()
+    )
+    await state.clear()
+
+# ====== АДМИН-ПАНЕЛЬ ======
+@dp.message(F.text == "⚙️ Админ-панель")
+async def admin_panel(message: types.Message):
+    """Админ-панель"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ У вас нет доступа к админ-панели!")
+        return
+    
+    await message.answer(
+        "⚙️ **Админ-панель**",
+        reply_markup=get_admin_menu()
+    )
+
+@dp.message(F.text == "🔙 Назад в меню")
+async def back_to_menu(message: types.Message):
+    """Вернуться в меню"""
+    await message.answer("Главное меню:", reply_markup=get_main_menu())
+
+@dp.message(F.text == "➕ Добавить запчасть")
+async def cmd_add(message: types.Message, state: FSMContext):
+    """Добавить новую запчасть"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён!")
+        return
+    
+    builder = InlineKeyboardBuilder()
+    for emoji_name, category in CATEGORIES.items():
+        builder.button(text=emoji_name, callback_data=f"addcat_{category}")
+    builder.adjust(2)
+    
+    await message.answer(
+        "Выберите категорию для новой запчасти:",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("addcat_"))
+async def add_category(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор категории при добавлении"""
+    category = callback.data.split("_", 1)[1]
+    await state.update_data(category=category)
+    await callback.message.edit_text(f"Категория: **{category}**\n\nВведите наименование позиции:")
+    await state.set_state(PartState.name)
+    await callback.answer()
+
+@dp.message(PartState.name)
+async def add_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("Введите поставщика:")
+    await state.set_state(PartState.supplier)
+
+@dp.message(PartState.supplier)
+async def add_supplier(message: types.Message, state: FSMContext):
+    await state.update_data(supplier=message.text)
+    await message.answer("Введите себестоимость (число):")
+    await state.set_state(PartState.cost_price)
+
+@dp.message(PartState.cost_price)
+async def add_cost(message: types.Message, state: FSMContext):
+    try:
+        await state.update_data(cost_price=float(message.text))
+        await message.answer("Введите розничную цену (число):")
+        await state.set_state(PartState.retail_price)
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите число!")
+
+@dp.message(PartState.retail_price)
+async def add_retail(message: types.Message, state: FSMContext):
+    try:
+        await state.update_data(retail_price=float(message.text))
+        await message.answer("Введите оптовую цену (число):")
+        await state.set_state(PartState.wholesale_price)
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите число!")
+
+@dp.message(PartState.wholesale_price)
+async def add_wholesale(message: types.Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        db.add_part(
+            data['category'], data['name'], data['supplier'],
+            float(data['cost_price']), float(data['retail_price']), float(message.text)
+        )
+        await message.answer(
+            f"✅ **Запчасть добавлена!**\n\n"
+            f"Категория: {data['category']}\n"
+            f"Название: {data['name']}\n"
+            f"Поставщик: {data['supplier']}",
+            reply_markup=get_admin_menu()
+        )
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Пожалуйста, введите число!")
+
+@dp.message(F.text == "📊 Статистика")
+async def show_statistics(message: types.Message):
+    """Показать статистику"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ запрещён!")
+        return
+    
+    categories = db.get_categories()
+    stats_text = "📊 **Статистика запчастей:**\n\n"
+    
+    total_parts = 0
+    for cat in categories:
+        parts = db.get_parts_by_category(cat)
+        stats_text += f"📦 {cat}: {len(parts)} позиций\n"
+        total_parts += len(parts)
+    
+    stats_text += f"\n✅ Всего: {total_parts} позиций"
+    await message.answer(stats_text, reply_markup=get_admin_menu())
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    """Справка"""
+    help_text = (
+        "📖 **Справка по боту:**\n\n"
+        "🛍️ **Каталог** - просмотр запчастей по категориям\n"
+        "📥 **Приходование** - добавление новых поступлений\n"
+        "⚙️ **Админ-панель** - управление базой данных\n\n"
+        "Команды:\n"
+        "/start - главное меню\n"
+        "/help - эта справка\n"
+    )
+    await message.answer(help_text)
+
+@dp.message()
+async def echo_handler(message: types.Message):
+    """Обработчик неизвестных сообщений"""
+    await message.answer(
+        "❓ Команда не распознана.\n"
+        "Используйте меню для навигации или /help для справки.",
+        reply_markup=get_main_menu()
+    )
+
+# ====== ЗАПУСК БОТА ======
+async def main():
+    """Запуск бота"""
+    db.init_db()
+    print("🤖 Бот запущен...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
