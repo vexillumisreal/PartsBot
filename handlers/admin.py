@@ -61,6 +61,7 @@ class BroadcastState(StatesGroup):
 # ─────────────────── ИНТЕРАКТИВНЫЙ DASHBOARD ───────────────────
 
 async def render_admin_dashboard(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
     stats = await db.get_stats_summary()
     margin_diff = stats['total_retail_value'] - stats['total_cost_value']
     margin_pct = (margin_diff / stats['total_retail_value'] * 100) if stats['total_retail_value'] > 0 else 0
@@ -82,23 +83,36 @@ async def render_admin_dashboard(target: types.Message | types.CallbackQuery) ->
     )
 
     builder = InlineKeyboardBuilder()
-    builder.button(text="➕ Добавить товар", callback_data="adm_add_part_start")
-    builder.button(text="✏️ Редактировать товар", callback_data="adm_find_part_start")
-    builder.button(text=f"🔔 Алерты склада ({stats['low_stock_count']})", callback_data="adm_view_alerts")
-    builder.button(text=f"🛍️ Заказы ({stats['pending_orders']})", callback_data="adm_orders_list")
-    builder.button(text=f"💼 Заявки на опт ({stats['pending_wholesale']})", callback_data="admin_wholesale_reqs")
-    builder.button(text="👥 Пользователи", callback_data="admin_users_list")
-    builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
-    builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
-    builder.button(text="⏳ Прогноз закупок", callback_data="adm_procure_forecast")
-    builder.button(text="👥 Топ клиентов", callback_data="adm_top_clients")
-    builder.button(text="📊 Финансовый анализ", callback_data="adm_fin_analysis")
-    builder.button(text="📦 Движение товара", callback_data="adm_stock_movements")
-    builder.button(text="🏢 Анализ поставщиков", callback_data="adm_suppliers")
-    builder.button(text="📥 Экспорт в CSV", callback_data="adm_export_menu")
-    builder.button(text="📢 Рассылка клиентам", callback_data="adm_broadcast_start")
+
+    # Общие кнопки для всех ролей
     builder.button(text="🔄 Обновить сводку", callback_data="admin_dashboard")
+
+    # Управление товарами — admin и warehouse_manager
+    if role in ("admin", "warehouse_manager"):
+        builder.button(text="➕ Добавить товар", callback_data="adm_add_part_start")
+        builder.button(text="✏️ Редактировать товар", callback_data="adm_find_part_start")
+        builder.button(text=f"🔔 Алерты склада ({stats['low_stock_count']})", callback_data="adm_view_alerts")
+        builder.button(text="📦 Движение товара", callback_data="adm_stock_movements")
+        builder.button(text="⏳ Прогноз закупок", callback_data="adm_procure_forecast")
+
+    # Продажи и финансы — admin и sales_manager
+    if role in ("admin", "sales_manager"):
+        builder.button(text=f"🛍️ Заказы ({stats['pending_orders']})", callback_data="adm_orders_list")
+        builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
+        builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
+        builder.button(text="📊 Финансовый анализ", callback_data="adm_fin_analysis")
+        builder.button(text="👥 Топ клиентов", callback_data="adm_top_clients")
+        builder.button(text="🏢 Анализ поставщиков", callback_data="adm_suppliers")
+
+    # Управление пользователями — только admin
+    if role == "admin":
+        builder.button(text=f"💼 Заявки на опт ({stats['pending_wholesale']})", callback_data="admin_wholesale_reqs")
+        builder.button(text="👥 Пользователи", callback_data="admin_users_list")
+        builder.button(text="📥 Экспорт в CSV", callback_data="adm_export_menu")
+        builder.button(text="📢 Рассылка клиентам", callback_data="adm_broadcast_start")
+
     builder.adjust(2)
+
 
     if isinstance(target, types.CallbackQuery):
         await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")

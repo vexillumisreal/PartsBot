@@ -22,6 +22,7 @@ BRANDS: dict[str, str] = {
     "📱 Infinix": "Infinix",
     "📱 Realme / Oppo": "Realme / Oppo",
     "📱 iPad": "iPad",
+    "📱 Vivo": "Vivo",
     "📱 Другие": "Другие",
 }
 

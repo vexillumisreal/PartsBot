@@ -10,3 +10,8 @@ spare_parts.db
 exports/*.csv
 exports/qr/
 *.backup
+
+# Прайс-листы и таблицы цен
+Цены Казань.xlsx
+*.xlsx
+*.xls

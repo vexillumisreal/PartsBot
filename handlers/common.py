@@ -25,9 +25,12 @@ def get_main_menu(role: str) -> types.ReplyKeyboardMarkup:
     builder.button(text="🛒 Корзина")
     builder.button(text="👤 Профиль")
 
-    if role in ("admin", "warehouse_manager", "sales_manager"):
+    # Кнопки склада только для тех, кто работает с товаром
+    if role in ("admin", "warehouse_manager"):
         builder.button(text="📥 Приходование")
         builder.button(text="📤 Списание")
+
+    if role in ("admin", "warehouse_manager", "sales_manager"):
         builder.button(text="⚙️ Админ-панель")
 
     builder.adjust(2)
@@ -40,8 +43,6 @@ def get_admin_menu(role: str) -> types.ReplyKeyboardMarkup:
     builder.button(text="📦 Управление товарами")
 
     if role in ("admin", "warehouse_manager"):
-        builder.button(text="📥 Приходование")
-        builder.button(text="📤 Списание")
         builder.button(text="🔔 Оповещения склада")
         builder.button(text="📈 Движение товара")
 
@@ -75,13 +76,13 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
     status = await db.get_user_status(uid)
     role = await db.get_user_role(uid)
 
-    status_badge = "🔥 <b>ОПТОВЫЕ ЦЕНЫ</b>" if status == "wholesale" else "🛍️ <b>РОЗНИЧНЫЕ ЦЕНЫ</b>"
+    price_badge = "🔥 <b>Оптовые цены</b>" if status == "wholesale" else "🛍️ Розничные цены"
     role_name = db.ROLES.get(role, "Пользователь")
 
     text = (
         f"👋 <b>Добро пожаловать в PartsBot!</b>\n\n"
-        f"Ваш персональный статус: {status_badge}\n"
-        f"👤 Роль в системе: <b>{html.escape(role_name)}</b>\n"
+        f"💰 Ценовой статус: {price_badge}\n"
+        f"🔐 Роль: <b>{html.escape(role_name)}</b>\n"
         f"🆔 Ваш ID: <code>{uid}</code>\n\n"
         f"<i>Используйте меню ниже для поиска запчастей и оформления заказов.</i>"
     )
@@ -148,7 +149,7 @@ async def cmd_profile(message: types.Message) -> None:
     status = await db.get_user_status(uid)
     role = await db.get_user_role(uid)
 
-    status_text = "ОПТ 📦 (Оптовые цены)" if status == "wholesale" else "РОЗНИЦА 🛍️ (Базовые цены)"
+    status_text = "📦 ОПТ (Оптовые цены)" if status == "wholesale" else "🛍️ РОЗНИЦА (Базовые цены)"
     role_text = db.ROLES.get(role, "Пользователь")
 
     text = (

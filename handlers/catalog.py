@@ -385,10 +385,9 @@ async def show_part_detail(callback: types.CallbackQuery) -> None:
     # Кнопка добавления в корзину
     if qty > 0:
         builder.button(text="🛍️ Добавить в корзину", callback_data=f"cart_add_{pid}")
+        builder.button(text="🛒 Перейти в корзину", callback_data="view_cart")
     else:
         builder.button(text="⚠️ Уведомить о поступлении", callback_data=f"notify_stock_{pid}")
-
-    builder.button(text="🛒 В корзину", callback_data="view_cart")
 
     # Для администраторов — быстрое управление карточкой
     if role in ("admin", "warehouse_manager"):
