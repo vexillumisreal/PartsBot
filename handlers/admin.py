@@ -1,6 +1,7 @@
 """handlers/admin.py — Dashboard администратора, редактирование товаров, аналитика, CSV-экспорт и рассылки."""
 import html
 import logging
+import asyncio
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -847,8 +848,10 @@ async def execute_broadcast(callback: types.CallbackQuery, state: FSMContext, bo
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
             sent += 1
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to send broadcast to {uid}: {e}")
             failed += 1
+        await asyncio.sleep(0.05)
 
     await callback.message.answer(
         f"✅ <b>Рассылка успешно завершена!</b>\n\n"
