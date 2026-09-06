@@ -1,0 +1,820 @@
+"""handlers/admin.py — Dashboard администратора, редактирование товаров, аналитика, CSV-экспорт и рассылки."""
+import html
+import logging
+from aiogram import Router, types, F, Bot
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import FSInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+import db
+from config import CATEGORIES, CURRENCY
+from handlers.common import get_admin_menu
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+MSG_LIMIT = 3800
+
+
+def _split_and_send(text: str) -> list[str]:
+    parts = []
+    while len(text) > MSG_LIMIT:
+        split_at = text.rfind("\n\n", 0, MSG_LIMIT)
+        if split_at == -1:
+            split_at = MSG_LIMIT
+        parts.append(text[:split_at])
+        text = text[split_at:].lstrip()
+    parts.append(text)
+    return parts
+
+
+def _cancel_builder(cb_data: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data=cb_data)
+    return builder
+
+
+# ─────────────────── СОСТОЯНИЯ FSM ───────────────────
+
+class PartState(StatesGroup):
+    category = State()
+    subcategory = State()
+    name = State()
+    cost_price = State()
+    retail_price = State()
+    wholesale_price = State()
+    threshold = State()
+
+
+class EditPartState(StatesGroup):
+    find_query = State()
+    select_field = State()
+    new_value = State()
+
+
+class BroadcastState(StatesGroup):
+    content = State()
+    confirm = State()
+
+
+# ─────────────────── ИНТЕРАКТИВНЫЙ DASHBOARD ───────────────────
+
+async def render_admin_dashboard(target: types.Message | types.CallbackQuery) -> None:
+    stats = await db.get_stats_summary()
+    margin_diff = stats['total_retail_value'] - stats['total_cost_value']
+    margin_pct = (margin_diff / stats['total_retail_value'] * 100) if stats['total_retail_value'] > 0 else 0
+
+    text = (
+        f"⚙️ <b>ПАНЕЛЬ УПРАВЛЕНИЯ PARTSBOT</b>\n"
+        f"<i>Сводка состояния склада и магазина в реальном времени</i>\n\n"
+        f"📦 <b>Склад и Каталог:</b>\n"
+        f"• Активных позиций: <b>{stats['total_parts']} шт.</b>\n"
+        f"• Всего единиц на складе: <b>{stats['total_stock']} шт.</b>\n"
+        f"• Оценка склада (розница): <b>{stats['total_retail_value']:,.0f} {CURRENCY}</b>\n"
+        f"• Себестоимость склада: <b>{stats['total_cost_value']:,.0f} {CURRENCY}</b>\n"
+        f"• Ожидаемая валовая прибыль: <b>{margin_diff:,.0f} {CURRENCY}</b> (маржа ~{margin_pct:.1f}%)\n"
+        f"• ⚠️ Низкий остаток (&lt; порога): <b>{stats['low_stock_count']} поз.</b>\n\n"
+        f"👥 <b>Клиенты и Продажи:</b>\n"
+        f"• Пользователей в боте: <b>{stats['total_users']}</b>\n"
+        f"• Новых заказов (в ожидании): <b>{stats['pending_orders']}</b>\n"
+        f"• Новых заявок на ОПТ: <b>{stats['pending_wholesale']}</b>\n"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Добавить товар", callback_data="adm_add_part_start")
+    builder.button(text="✏️ Редактировать товар", callback_data="adm_find_part_start")
+    builder.button(text=f"🔔 Алерты склада ({stats['low_stock_count']})", callback_data="adm_view_alerts")
+    builder.button(text=f"🛍️ Заказы ({stats['pending_orders']})", callback_data="adm_orders_list")
+    builder.button(text=f"💼 Заявки на опт ({stats['pending_wholesale']})", callback_data="admin_wholesale_reqs")
+    builder.button(text="👥 Пользователи", callback_data="admin_users_list")
+    builder.button(text="📊 Финансовый анализ", callback_data="adm_fin_analysis")
+    builder.button(text="📈 Движение товара", callback_data="adm_stock_movements")
+    builder.button(text="🏢 Анализ поставщиков", callback_data="adm_suppliers")
+    builder.button(text="📥 Экспорт в CSV", callback_data="adm_export_menu")
+    builder.button(text="📢 Рассылка клиентам", callback_data="adm_broadcast_start")
+    builder.button(text="🔄 Обновить сводку", callback_data="admin_dashboard")
+    builder.adjust(2)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.message(F.text == "📊 Дашборд и Аналитика")
+@router.callback_query(F.data == "admin_dashboard")
+async def dashboard_handler(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "warehouse_manager", "sales_manager"):
+        msg = "❌ Нет доступа к админ-панели."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+    await render_admin_dashboard(target)
+
+
+# ─────────────────── FSM: ДОБАВЛЕНИЕ ЗАПЧАСТИ ───────────────────
+
+@router.message(F.text == "➕ Добавить запчасть")
+@router.callback_query(F.data == "adm_add_part_start")
+async def add_new_part(target: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role != "admin":
+        msg = "❌ Только администратор может добавлять запчасти."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for emoji_name, category in CATEGORIES.items():
+        builder.button(text=emoji_name, callback_data=f"add_cat_{category}")
+    builder.button(text="❌ Отмена", callback_data="part_add_cancel")
+    builder.adjust(2)
+
+    text = "➕ <b>Добавление запчасти</b>\n\nВыберите категорию:"
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(PartState.category)
+
+
+@router.callback_query(F.data == "part_add_cancel")
+async def part_add_cancel_cb(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.edit_text("❌ Добавление запчасти отменено.")
+    await callback.answer()
+
+
+@router.callback_query(PartState.category, F.data.startswith("add_cat_"))
+async def select_add_category(callback: types.CallbackQuery, state: FSMContext) -> None:
+    category = callback.data[8:]
+    await state.update_data(category=category)
+
+    subcats = await db.get_subcategories(category)
+    builder = InlineKeyboardBuilder()
+    if subcats:
+        for subcat in subcats:
+            builder.button(text=f"📂 {subcat}", callback_data=f"add_sub_{subcat}")
+    builder.button(text="➕ Новая подкатегория", callback_data="add_sub_new")
+    builder.button(text="⏩ Без подкатегории", callback_data="add_sub_skip")
+    builder.button(text="❌ Отмена", callback_data="part_add_cancel")
+    builder.adjust(1)
+
+    await callback.message.edit_text(
+        f"➕ Категория: <b>{html.escape(category)}</b>\nВыберите подкатегорию или создайте новую:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await state.set_state(PartState.subcategory)
+    await callback.answer()
+
+
+@router.callback_query(PartState.subcategory, F.data.startswith("add_sub_"))
+async def select_add_subcategory(callback: types.CallbackQuery, state: FSMContext) -> None:
+    builder = _cancel_builder("part_add_cancel")
+    if callback.data == "add_sub_new":
+        await callback.message.edit_text(
+            "➕ Введите название <b>новой подкатегории</b>:",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
+        )
+    elif callback.data == "add_sub_skip":
+        await state.update_data(subcategory="")
+        await callback.message.edit_text("➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML")
+        await state.set_state(PartState.name)
+    else:
+        subcategory = callback.data[8:]
+        await state.update_data(subcategory=subcategory)
+        await callback.message.edit_text("➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML")
+        await state.set_state(PartState.name)
+    await callback.answer()
+
+
+@router.message(PartState.subcategory)
+async def input_new_subcategory(message: types.Message, state: FSMContext) -> None:
+    subcat = message.text.strip()
+    await state.update_data(subcategory=subcat)
+    builder = _cancel_builder("part_add_cancel")
+    await message.answer("➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(PartState.name)
+
+
+@router.message(PartState.name)
+async def input_part_name(message: types.Message, state: FSMContext) -> None:
+    name = message.text.strip()
+    await state.update_data(name=name)
+    builder = _cancel_builder("part_add_cancel")
+    await message.answer("💰 Введите <b>себестоимость</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(PartState.cost_price)
+
+
+@router.message(PartState.cost_price)
+async def input_cost_price(message: types.Message, state: FSMContext) -> None:
+    try:
+        cost_price = float(message.text.replace(",", ".").strip())
+        if cost_price < 0:
+            raise ValueError
+    except ValueError:
+        builder = _cancel_builder("part_add_cancel")
+        await message.answer("❌ Введите положительное число:", reply_markup=builder.as_markup())
+        return
+
+    await state.update_data(cost_price=cost_price)
+    builder = _cancel_builder("part_add_cancel")
+    await message.answer("💰 Введите <b>розничную цену</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(PartState.retail_price)
+
+
+@router.message(PartState.retail_price)
+async def input_retail_price(message: types.Message, state: FSMContext) -> None:
+    try:
+        retail_price = float(message.text.replace(",", ".").strip())
+        if retail_price < 0:
+            raise ValueError
+    except ValueError:
+        builder = _cancel_builder("part_add_cancel")
+        await message.answer("❌ Введите положительное число:", reply_markup=builder.as_markup())
+        return
+
+    await state.update_data(retail_price=retail_price)
+    builder = _cancel_builder("part_add_cancel")
+    await message.answer("💰 Введите <b>оптовую цену</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(PartState.wholesale_price)
+
+
+@router.message(PartState.wholesale_price)
+async def input_wholesale_price(message: types.Message, state: FSMContext) -> None:
+    try:
+        wholesale_price = float(message.text.replace(",", ".").strip())
+        if wholesale_price < 0:
+            raise ValueError
+    except ValueError:
+        builder = _cancel_builder("part_add_cancel")
+        await message.answer("❌ Введите положительное число:", reply_markup=builder.as_markup())
+        return
+
+    await state.update_data(wholesale_price=wholesale_price)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Оставить по умолчанию (3 шт.)", callback_data="add_thresh_default")
+    builder.button(text="❌ Отмена", callback_data="part_add_cancel")
+    builder.adjust(1)
+
+    await message.answer(
+        "🔔 Введите <b>порог для оповещения о низком остатке</b> (по умолчанию 3 шт.):",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await state.set_state(PartState.threshold)
+
+
+@router.callback_query(PartState.threshold, F.data == "add_thresh_default")
+async def default_threshold_cb(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await save_new_part(callback.message, state, threshold=3)
+    await callback.answer()
+
+
+@router.message(PartState.threshold)
+async def input_threshold(message: types.Message, state: FSMContext) -> None:
+    try:
+        thresh = int(message.text.strip())
+        if thresh < 0:
+            raise ValueError
+    except ValueError:
+        thresh = 3
+    await save_new_part(message, state, threshold=thresh)
+
+
+async def save_new_part(target: types.Message, state: FSMContext, threshold: int) -> None:
+    data = await state.get_data()
+    warnings = ""
+    if data["wholesale_price"] > data["retail_price"]:
+        warnings = "\n⚠️ <i>Внимание: Оптовая цена установлена выше розничной!</i>"
+
+    try:
+        part_id = await db.add_part(
+            category=data["category"],
+            subcategory=data.get("subcategory", ""),
+            name=data["name"],
+            cost_price=data["cost_price"],
+            retail_price=data["retail_price"],
+            wholesale_price=data["wholesale_price"],
+            low_stock_threshold=threshold,
+        )
+        margin = ((data["retail_price"] - data["cost_price"]) / data["retail_price"] * 100
+                  if data["retail_price"] > 0 else 0)
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="📥 Оприходовать количество", callback_data="start_sin")
+        builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+        builder.adjust(1)
+
+        sub_str = f" → {data.get('subcategory')}" if data.get("subcategory") else ""
+        text = (
+            f"✅ <b>Запчасть успешно добавлена в базу!</b> (ID: <code>{part_id}</code>)\n\n"
+            f"📦 <b>{html.escape(data['name'])}</b>\n"
+            f"📁 Категория: <b>{html.escape(data['category'])}</b>{sub_str}\n"
+            f"💸 Себестоимость: <code>{data['cost_price']:,.0f} {CURRENCY}</code>\n"
+            f"🛍️ Розница: <code>{data['retail_price']:,.0f} {CURRENCY}</code>\n"
+            f"📦 Опт: <code>{data['wholesale_price']:,.0f} {CURRENCY}</code>\n"
+            f"📈 Расчётная маржа: <b>{margin:.1f}%</b>\n"
+            f"🔔 Порог алерта: <code>{threshold} шт.</code>"
+            + warnings
+        )
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception:
+        logger.exception("add_part failed")
+        await target.answer("❌ Ошибка при сохранении запчасти в базе данных.")
+
+    await state.clear()
+
+
+# ─────────────────── РЕДАКТИРОВАНИЕ ТОВАРОВ ───────────────────
+
+@router.message(F.text == "📦 Управление товарами")
+@router.callback_query(F.data == "adm_find_part_start")
+async def start_find_part_edit(target: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "warehouse_manager"):
+        msg = "❌ Нет прав для редактирования товаров."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="admin_dashboard")
+    text = (
+        "✏️ <b>Редактирование запчасти:</b>\n\n"
+        "Введите <b>ID запчасти</b> (число) или <b>название детали</b> для поиска:"
+    )
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(EditPartState.find_query)
+
+
+@router.message(EditPartState.find_query)
+async def process_find_part(message: types.Message, state: FSMContext) -> None:
+    query = message.text.strip()
+    await state.clear()
+
+    if query.isdigit():
+        part = await db.get_part(int(query))
+        if part:
+            await render_part_editor(message, part[0])
+            return
+
+    parts, total = await db.search_parts(query, page=0, page_size=10)
+    if not parts:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔍 Попробовать снова", callback_data="adm_find_part_start")
+        builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+        builder.adjust(1)
+        await message.answer(f"❌ Запчасти по запросу «{html.escape(query)}» не найдены.", reply_markup=builder.as_markup(), parse_mode="HTML")
+        return
+
+    builder = InlineKeyboardBuilder()
+    for row in parts:
+        builder.button(text=f"ID {row[0]}: {row[1][:25]}", callback_data=f"adm_edit_part_{row[0]}")
+    builder.button(text="❌ Отмена", callback_data="admin_dashboard")
+    builder.adjust(1)
+
+    await message.answer(
+        f"🔍 Найдено {total} запчастей. Выберите для редактирования:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+async def render_part_editor(target: types.Message | types.CallbackQuery, part_id: int) -> None:
+    part = await db.get_part(part_id)
+    if not part:
+        msg = "❌ Запчасть не найдена."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    pid, name, cost_price, ret_price, wh_price, qty, category, subcategory, supplier, threshold = part
+
+    text = (
+        f"✏️ <b>Карточка редактирования товара:</b>\n\n"
+        f"ID: <code>{pid}</code>\n"
+        f"📦 Название: <b>{html.escape(name)}</b>\n"
+        f"📁 Категория: {html.escape(category)} ({html.escape(subcategory or 'нет')})\n"
+        f"📊 Остаток: <b>{qty} шт.</b>\n"
+        f"💸 Себестоимость: <code>{cost_price:,.0f} {CURRENCY}</code>\n"
+        f"🛍️ Розничная цена: <code>{ret_price:,.0f} {CURRENCY}</code>\n"
+        f"📦 Оптовая цена: <code>{wh_price:,.0f} {CURRENCY}</code>\n"
+        f"🔔 Порог низкого остатка: <code>{threshold} шт.</code>\n"
+        f"🏭 Поставщик: <i>{html.escape(supplier or 'Не указан')}</i>\n"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💰 Изменить розничную цену", callback_data=f"adm_setfield_{pid}_retail_price")
+    builder.button(text="📦 Изменить оптовую цену", callback_data=f"adm_setfield_{pid}_wholesale_price")
+    builder.button(text="💸 Изменить себестоимость", callback_data=f"adm_setfield_{pid}_cost_price")
+    builder.button(text="🔢 Изменить остаток вручную", callback_data=f"adm_setfield_{pid}_quantity")
+    builder.button(text="🔔 Изменить порог алерта", callback_data=f"adm_setfield_{pid}_low_stock_threshold")
+    builder.button(text="🗑️ Удалить/скрыть запчасть", callback_data=f"adm_del_part_{pid}")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_edit_part_"))
+async def adm_edit_part_cb(callback: types.CallbackQuery) -> None:
+    part_id = int(callback.data[14:])
+    await render_part_editor(callback, part_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm_setfield_"))
+async def adm_setfield_cb(callback: types.CallbackQuery, state: FSMContext) -> None:
+    # adm_setfield_{pid}_{field}
+    parts = callback.data.split("_", 3)
+    part_id = int(parts[2])
+    field = parts[3]
+
+    field_names = {
+        "retail_price": "розничную цену (руб)",
+        "wholesale_price": "оптовую цену (руб)",
+        "cost_price": "себестоимость (руб)",
+        "quantity": "новое точное количество на складе (шт)",
+        "low_stock_threshold": "порог алерта о низком остатке (шт)",
+    }
+
+    await state.update_data(part_id=part_id, field=field)
+    builder = _cancel_builder(f"adm_edit_part_{part_id}")
+
+    await callback.message.edit_text(
+        f"✏️ Введите новое значение для: <b>{field_names.get(field, field)}</b>:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await state.set_state(EditPartState.new_value)
+    await callback.answer()
+
+
+@router.message(EditPartState.new_value)
+async def input_new_field_value(message: types.Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    part_id = data["part_id"]
+    field = data["field"]
+    val_str = message.text.replace(",", ".").strip()
+
+    try:
+        if field in ("retail_price", "wholesale_price", "cost_price"):
+            val = float(val_str)
+            if val < 0:
+                raise ValueError
+        elif field in ("quantity", "low_stock_threshold"):
+            val = int(val_str)
+            if val < 0:
+                raise ValueError
+        else:
+            val = val_str
+    except ValueError:
+        builder = _cancel_builder(f"adm_edit_part_{part_id}")
+        await message.answer("❌ Введите корректное положительное число:", reply_markup=builder.as_markup())
+        return
+
+    if field == "quantity":
+        await db.set_part_quantity(part_id, val, user_id=message.from_user.id, reason="Корректировка из админки")
+    else:
+        await db.update_part_field(part_id, field, val)
+
+    await state.clear()
+    await message.answer("✅ <b>Значение успешно сохранено!</b>", parse_mode="HTML")
+    await render_part_editor(message, part_id)
+
+
+@router.callback_query(F.data.startswith("adm_del_part_"))
+async def adm_del_part_cb(callback: types.CallbackQuery) -> None:
+    part_id = int(callback.data[13:])
+    ok = await db.deactivate_part(part_id)
+    if ok:
+        await callback.answer("Запчасть скрыта из каталога", show_alert=True)
+        await render_admin_dashboard(callback)
+    else:
+        await callback.answer("Ошибка при удалении", show_alert=True)
+
+
+# ─────────────────── ОПОВЕЩЕНИЯ СКЛАДА ───────────────────
+
+@router.message(F.text == "🔔 Оповещения склада")
+@router.callback_query(F.data == "adm_view_alerts")
+async def show_low_stock_alerts(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "warehouse_manager"):
+        msg = "❌ Нет прав для просмотра оповещений."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    alerts = await db.get_low_stock_alerts(unread_only=False)
+
+    if not alerts:
+        text = "✅ <b>Все запчасти в норме!</b>\nНет активных оповещений о низких остатках."
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    else:
+        text = f"🔔 <b>Оповещения о низких остатках ({len(alerts)} шт.):</b>\n\n"
+        for a in alerts[:25]:
+            status_dot = "🔴" if a.get("sent") == 0 else "⚪"
+            text += (
+                f"{status_dot} <b>{html.escape(a['part_name'])}</b>\n"
+                f"   📁 {html.escape(a['category'])}\n"
+                f"   📦 Остаток: <b>{a['quantity']} шт.</b> (порог: {a['low_stock_threshold']} шт.)\n"
+                f"   🕐 <code>{a['date'][:16]}</code>\n\n"
+            )
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Отметить все прочитанными", callback_data="adm_alerts_mark_all")
+        builder.button(text="🗑️ Очистить журнал алертов", callback_data="adm_alerts_clear")
+        builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+        builder.adjust(1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm_alerts_mark_all")
+async def mark_all_alerts_cb(callback: types.CallbackQuery) -> None:
+    await db.mark_all_alerts_sent()
+    await callback.answer("Все оповещения отмечены как прочитанные")
+    await show_low_stock_alerts(callback)
+
+
+@router.callback_query(F.data == "adm_alerts_clear")
+async def clear_alerts_cb(callback: types.CallbackQuery) -> None:
+    await db.clear_low_stock_alerts()
+    await callback.answer("Журнал оповещений очищен")
+    await show_low_stock_alerts(callback)
+
+
+# ─────────────────── ДВИЖЕНИЕ ТОВАРА И ОТЧЕТЫ ───────────────────
+
+@router.message(F.text == "📈 Движение товара")
+@router.callback_query(F.data == "adm_stock_movements")
+async def show_stock_movement(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "warehouse_manager"):
+        msg = "❌ Нет прав для просмотра отчётов."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    report = await db.get_stock_movement_report(days=30)
+    if not report:
+        text = "⚠️ <b>Нет данных о движении товара за последние 30 дней.</b>"
+    else:
+        text = "📊 <b>Отчёт о движении товара за последние 30 дней:</b>\n\n"
+        for row in report[:30]:
+            text += (
+                f"📦 <b>{html.escape(row['part_name'])}</b>\n"
+                f"   📁 {html.escape(row['category'])}\n"
+                f"   📈 Приход: <code>+{row['inflow']} шт.</code> | 📉 Расход: <code>-{row['outflow']} шт.</code>\n"
+                f"   🏭 <i>{html.escape(row['supplier'] or 'Поставщик не указан')}</i>\n\n"
+            )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📥 Скачать полный отчёт (CSV)", callback_data="export_movements_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(1)
+
+    for chunk in _split_and_send(text):
+        if isinstance(target, types.CallbackQuery):
+            await target.message.edit_text(chunk, reply_markup=builder.as_markup(), parse_mode="HTML")
+            await target.answer()
+        else:
+            await target.answer(chunk, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── ФИНАНСОВЫЙ АНАЛИЗ ───────────────────
+
+@router.message(F.text == "💰 Финансовый анализ")
+@router.callback_query(F.data == "adm_fin_analysis")
+async def show_financial_analysis(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "sales_manager"):
+        msg = "❌ Нет прав для просмотра финансовых данных."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    report = await db.get_financial_summary()
+    if not report:
+        text = "⚠️ Нет финансовых данных."
+    else:
+        text = (
+            "💰 <b>Финансовый анализ склада:</b>\n\n"
+            f"💵 Общая выручка (розница): <b>{report['total_revenue']:,.2f} {CURRENCY}</b>\n"
+            f"💸 Общие затраты (себестоимость): <b>{report['total_cost']:,.2f} {CURRENCY}</b>\n"
+            f"📈 Потенциальная валовая прибыль: <b>{report['total_profit']:,.2f} {CURRENCY}</b>\n"
+            f"📊 Средняя торговая маржа: <b>{report['avg_margin']:.1f}%</b>\n\n"
+        )
+        profitability = await db.get_category_profitability()
+        if profitability:
+            text += "🏆 <b>Топ-10 товаров по маржинальности:</b>\n"
+            for i, row in enumerate(profitability, 1):
+                text += f"{i}. <b>{html.escape(row['part_name'])}</b> — <code>{row['margin_percent']}%</code> маржи\n"
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📥 Выгрузить остатки (CSV)", callback_data="export_stock_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── АНАЛИЗ ПОСТАВЩИКОВ ───────────────────
+
+@router.message(F.text == "🏢 Анализ поставщиков")
+@router.callback_query(F.data == "adm_suppliers")
+async def show_supplier_analysis(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "sales_manager"):
+        msg = "❌ Нет прав для просмотра анализа поставщиков."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    report = await db.get_supplier_analysis()
+    if not report:
+        text = "⚠️ Нет данных о поставщиках."
+    else:
+        text = f"🏢 <b>Анализ поставщиков ({len(report)} компаний):</b>\n\n"
+        for row in report:
+            text += (
+                f"🏭 <b>{html.escape(row['supplier'])}</b>\n"
+                f"   📦 Всего поставок: <code>{row['delivery_count']}</code>\n"
+                f"   📊 Суммарно принято: <b>{row['total_received']} шт.</b>\n"
+                f"   📈 Средний объём партии: <code>{row['avg_delivery_qty']} шт.</code>\n"
+                f"   🕐 Последняя доставка: <code>{row['last_delivery']}</code>\n\n"
+            )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── ЭКСПОРТ В CSV ───────────────────
+
+@router.message(F.text == "📥 Экспорт в CSV")
+@router.callback_query(F.data == "adm_export_menu")
+async def export_menu(target: types.Message | types.CallbackQuery) -> None:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📦 Экспорт остатков склада (CSV)", callback_data="export_stock_csv")
+    builder.button(text="📈 Экспорт движения товара (CSV)", callback_data="export_movements_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(1)
+
+    text = "📥 <b>Экспорт данных в Excel / CSV:</b>\nВыберите тип формируемого файла:"
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "export_stock_csv")
+async def export_stock_csv_cb(callback: types.CallbackQuery) -> None:
+    await callback.answer("Формирование файла...")
+    filepath = await db.export_stock_csv()
+    doc = FSInputFile(filepath, filename="Склад_Остатки.csv")
+    await callback.message.answer_document(
+        doc,
+        caption="📦 <b>Выгрузка остатков склада</b>\nФормат: CSV (разделитель точка с запятой, UTF-8 с BOM для Excel).",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "export_movements_csv")
+async def export_movements_csv_cb(callback: types.CallbackQuery) -> None:
+    await callback.answer("Формирование файла...")
+    filepath = await db.export_movements_csv(days=60)
+    doc = FSInputFile(filepath, filename="Движение_Товара_60_дней.csv")
+    await callback.message.answer_document(
+        doc,
+        caption="📈 <b>Выгрузка истории движения товаров (за 60 дней)</b>\nФормат: CSV.",
+        parse_mode="HTML",
+    )
+
+
+# ─────────────────── РАССЫЛКА СООБЩЕНИЙ ───────────────────
+
+@router.message(F.text == "📢 Рассылка")
+@router.callback_query(F.data == "adm_broadcast_start")
+async def start_broadcast(target: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role != "admin":
+        msg = "❌ Только администратор может отправлять рассылки."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="admin_dashboard")
+
+    text = (
+        "📢 <b>Создание массовой рассылки:</b>\n\n"
+        "Отправьте текст сообщения для рассылки всем пользователям бота.\n"
+        "<i>(Поддерживается базовое форматирование)</i>:"
+    )
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await state.set_state(BroadcastState.content)
+
+
+@router.message(BroadcastState.content)
+async def process_broadcast_content(message: types.Message, state: FSMContext) -> None:
+    text = message.html_text if hasattr(message, "html_text") else message.text
+    await state.update_data(broadcast_text=text)
+
+    users = await db.get_all_users()
+    count = len(users)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"🚀 Отправить всем ({count} польз.)", callback_data="broadcast_confirm")
+    builder.button(text="❌ Отмена", callback_data="admin_dashboard")
+    builder.adjust(1)
+
+    await message.answer(
+        f"📢 <b>Предпросмотр рассылки:</b>\n\n"
+        f"{text}\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Получателей: <b>{count} пользователей</b>\n"
+        f"Отправить сообщение?",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await state.set_state(BroadcastState.confirm)
+
+
+@router.callback_query(BroadcastState.confirm, F.data == "broadcast_confirm")
+async def execute_broadcast(callback: types.CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    data = await state.get_data()
+    text = data.get("broadcast_text", "")
+    await state.clear()
+
+    await callback.message.edit_text("⏳ Идёт отправка сообщений...")
+    users = await db.get_all_users()
+
+    sent = 0
+    failed = 0
+
+    for u in users:
+        uid = u["user_id"]
+        try:
+            await bot.send_message(uid, text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await callback.message.answer(
+        f"✅ <b>Рассылка успешно завершена!</b>\n\n"
+        f"• Доставлено: <b>{sent}</b>\n"
+        f"• Ошибок / заблокировано: <b>{failed}</b>",
+        parse_mode="HTML",
+    )
+    await render_admin_dashboard(callback.message)
