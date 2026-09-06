@@ -1145,13 +1145,13 @@ async def adm_orders_list_handler(target: types.Message | types.CallbackQuery) -
         await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("adm_ord_v_"))
-async def adm_order_view_handler(callback: types.CallbackQuery) -> None:
-    await callback.answer()
-    order_id = int(callback.data[10:])
+async def _render_order_view(target: types.CallbackQuery | types.Message, order_id: int) -> None:
     order = await db.get_order_details(order_id)
     if not order:
-        await callback.message.answer("❌ Заказ не найден.")
+        if isinstance(target, types.CallbackQuery):
+            await target.message.answer("❌ Заказ не найден.")
+        else:
+            await target.answer("❌ Заказ не найден.")
         return
 
     st = order.get("status", "pending")
@@ -1199,7 +1199,24 @@ async def adm_order_view_handler(callback: types.CallbackQuery) -> None:
     builder.button(text="🔙 К списку заказов", callback_data="adm_orders_list")
     builder.adjust(3, 2, 1, 1)
 
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    try:
+        if isinstance(target, types.CallbackQuery):
+            await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        else:
+            await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        if "message is not modified" not in str(e).lower():
+            logger.warning("_render_order_view edit_text error: %s", e)
+
+
+@router.callback_query(F.data.startswith("adm_ord_v_"))
+async def adm_order_view_handler(callback: types.CallbackQuery) -> None:
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+    order_id = int(callback.data[10:])
+    await _render_order_view(callback, order_id)
 
 
 @router.callback_query(F.data.startswith("adm_ost_"))
@@ -1210,13 +1227,19 @@ async def adm_order_set_status_handler(callback: types.CallbackQuery, bot: Bot) 
 
     order = await db.get_order_details(order_id)
     if not order:
-        await callback.answer("Заказ не найден", show_alert=True)
+        try:
+            await callback.answer("Заказ не найден", show_alert=True)
+        except Exception:
+            pass
         return
 
     deduct = (new_status == "completed" and order.get("status") != "completed")
     ok = await db.update_order_status(order_id, new_status, deduct_stock=deduct, staff_id=callback.from_user.id)
     if ok:
-        await callback.answer(f"Статус заказа #{order_id} изменён на '{new_status}'!", show_alert=True)
+        try:
+            await callback.answer(f"Статус заказа #{order_id} изменён на '{new_status}'!", show_alert=True)
+        except Exception:
+            pass
         st_name = ORDER_STATUSES.get(new_status, new_status)
         try:
             await bot.send_message(
@@ -1228,10 +1251,12 @@ async def adm_order_set_status_handler(callback: types.CallbackQuery, bot: Bot) 
         except Exception:
             pass
     else:
-        await callback.answer("❌ Ошибка при обновлении статуса", show_alert=True)
+        try:
+            await callback.answer("❌ Ошибка при обновлении статуса", show_alert=True)
+        except Exception:
+            pass
 
-    callback.data = f"adm_ord_v_{order_id}"
-    await adm_order_view_handler(callback)
+    await _render_order_view(callback, order_id)
 
 
 @router.callback_query(F.data.startswith("adm_opay_"))
@@ -1243,12 +1268,17 @@ async def adm_order_set_pay_handler(callback: types.CallbackQuery) -> None:
     ok = await db.set_order_payment_status(order_id, new_pay)
     if ok:
         pay_label = "Оплачен" if new_pay == "paid" else "Не оплачен"
-        await callback.answer(f"Статус оплаты заказа #{order_id} изменен: {pay_label}!", show_alert=True)
+        try:
+            await callback.answer(f"Статус оплаты заказа #{order_id} изменен: {pay_label}!", show_alert=True)
+        except Exception:
+            pass
     else:
-        await callback.answer("❌ Ошибка при обновлении оплаты", show_alert=True)
+        try:
+            await callback.answer("❌ Ошибка при обновлении оплаты", show_alert=True)
+        except Exception:
+            pass
 
-    callback.data = f"adm_ord_v_{order_id}"
-    await adm_order_view_handler(callback)
+    await _render_order_view(callback, order_id)
 
 
 @router.callback_query(F.data == "start_sin")
