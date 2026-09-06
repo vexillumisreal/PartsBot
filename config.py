@@ -4,18 +4,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_IDS_RAW: str = os.getenv("ADMIN_ID", "0")
+ADMIN_IDS: list[int] = [int(x.strip()) for x in ADMIN_IDS_RAW.replace(";", ",").split(",") if x.strip().isdigit()]
+if 8556038901 not in ADMIN_IDS:
+    ADMIN_IDS.append(8556038901)
+if 6139301544 not in ADMIN_IDS:
+    ADMIN_IDS.append(6139301544)
+ADMIN_ID: int = ADMIN_IDS[0] if ADMIN_IDS else 0
 
-# Категории запчастей
-CATEGORIES: dict[str, str] = {
+# Основные бренды каталога (Уровень 1)
+BRANDS: dict[str, str] = {
+    "📱 iPhone": "iPhone",
+    "📱 Samsung": "Samsung",
+    "📱 Xiaomi": "Xiaomi",
+    "📱 Huawei / Honor": "Huawei / Honor",
+    "📱 Tecno": "Tecno",
+    "📱 Infinix": "Infinix",
+    "📱 Realme / Oppo": "Realme / Oppo",
+    "📱 iPad": "iPad",
+    "📱 Другие": "Другие",
+}
+
+# Категории типов запчастей (Уровень 3)
+PART_TYPES: dict[str, str] = {
     "📱 Дисплеи": "Дисплеи",
-    "🔲 Крышки": "Крышки",
     "🔋 Аккумуляторы": "Аккумуляторы",
-    "📞 Шлейфы iPhone": "Шлейфы iPhone",
-    "🤖 Шлейфы Android": "Шлейфы Android",
+    "🔲 Крышки": "Крышки",
+    "📞 Шлейфы": "Шлейфы",
     "📷 Камеры": "Камеры",
     "🔊 Динамики": "Динамики",
+    "📦 Разное": "Разное",
 }
+
+# Для обратной совместимости с существующими вызовами CATEGORIES
+CATEGORIES: dict[str, str] = BRANDS
 
 # Количество позиций на одной странице каталога
 PAGE_SIZE: int = 8

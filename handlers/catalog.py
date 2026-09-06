@@ -74,17 +74,48 @@ def _pagination_builder(
     return builder
 
 
-# ─────────────────── ГЛАВНОЕ МЕНЮ КАТАЛОГА ───────────────────
+# ─────────────────── КОДЫ БРЕНДОВ И КАТЕГОРИЙ (КОМПАКТНЫЕ CALLBACKS) ───────────────────
+
+BRAND_CODES: dict[str, str] = {
+    "iPhone": "iph",
+    "Samsung": "sam",
+    "Xiaomi": "xia",
+    "Huawei / Honor": "hua",
+    "Tecno": "tec",
+    "Infinix": "inf",
+    "Realme / Oppo": "rea",
+    "iPad": "ipa",
+    "Vivo": "viv",
+    "Другие": "oth",
+}
+CODE_TO_BRAND: dict[str, str] = {v: k for k, v in BRAND_CODES.items()}
+
+TYPE_CODES: dict[str, str] = {
+    "Дисплеи": "disp",
+    "Аккумуляторы": "bat",
+    "Крышки": "cov",
+    "Шлейфы": "flex",
+    "Камеры": "cam",
+    "Динамики": "spk",
+    "Разное": "oth",
+    "all": "all",
+}
+CODE_TO_TYPE: dict[str, str] = {v: k for k, v in TYPE_CODES.items()}
+
+
+# ─────────────────── ГЛАВНОЕ МЕНЮ КАТАЛОГА (УРОВЕНЬ 1: БРЕНДЫ) ───────────────────
 
 async def _send_category_menu(target: types.Message | types.CallbackQuery) -> None:
     builder = InlineKeyboardBuilder()
-    for emoji_name, cat in CATEGORIES.items():
-        builder.button(text=emoji_name, callback_data=f"cat_{cat}")
+    brands = await db.get_brands()
+    for brand, cnt in brands:
+        b_code = BRAND_CODES.get(brand, brand[:4].lower())
+        builder.button(text=f"📱 {brand} ({cnt})", callback_data=f"cbr_{b_code}")
     builder.button(text="🔍 Поиск", callback_data="catalog_start_search")
     builder.button(text="🛒 Корзина", callback_data="view_cart")
     builder.adjust(2)
 
-    text = "🛍️ <b>Каталог запчастей:</b>\nВыберите интересующую категорию:"
+    text = "🛍️ <b>Каталог запчастей:</b>\nВыберите бренд устройства:"
     if isinstance(target, types.CallbackQuery):
         await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
         await target.answer()
@@ -102,68 +133,151 @@ async def back_to_catalog(callback: types.CallbackQuery) -> None:
     await _send_category_menu(callback)
 
 
-# ─────────────────── ВЫБОР КАТЕГОРИИ И ПОДКАТЕГОРИЙ ───────────────────
+# ─────────────────── УРОВЕНЬ 2: МОДЕЛИ ВЫБРАННОГО БРЕНДА ───────────────────
 
-@router.callback_query(F.data.startswith("cat_"))
-async def show_category(callback: types.CallbackQuery) -> None:
-    category = callback.data[4:]
-    subcats = await db.get_subcategories(category)
-
-    if subcats:
-        builder = InlineKeyboardBuilder()
-        for subcat in subcats:
-            builder.button(text=f"📂 {subcat}", callback_data=f"subcat_{category}__{subcat}")
-        builder.button(text="📦 Все запчасти категории", callback_data=f"cat_all_{category}")
-        builder.button(text="🔙 Назад в каталог", callback_data="back_catalog")
-        builder.adjust(1)
-        await callback.message.edit_text(
-            f"📦 <b>{html.escape(category)}</b> — Выберите подкатегорию:",
-            reply_markup=builder.as_markup(),
-            parse_mode="HTML",
-        )
-    else:
-        await _show_parts(callback, category=category, subcategory=None, page=0)
-
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("cat_all_"))
-async def show_all_cat_parts(callback: types.CallbackQuery) -> None:
-    category = callback.data[8:]
-    await _show_parts(callback, category=category, subcategory=None, page=0)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("subcat_"))
-async def show_by_subcategory(callback: types.CallbackQuery) -> None:
-    raw = callback.data[7:]
+@router.callback_query(F.data.startswith("cbr_"))
+async def show_brand_models(callback: types.CallbackQuery) -> None:
+    raw = callback.data[4:]
     page = 0
     if "_p" in raw:
         raw, p_str = raw.rsplit("_p", 1)
         page = int(p_str) if p_str.isdigit() else 0
-    category, subcategory = raw.split("__", 1)
-    await _show_parts(callback, category=category, subcategory=subcategory, page=page)
+
+    b_code = raw
+    brand = CODE_TO_BRAND.get(b_code, b_code)
+    models = await db.get_models_by_brand(brand)
+
+    if not models:
+        await _show_parts_list(callback, brand, "", None, page=0)
+        await callback.answer()
+        return
+
+    page_size = 8
+    total = len(models)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    page_models = models[page * page_size : (page + 1) * page_size]
+
+    builder = InlineKeyboardBuilder()
+    for idx, (m_name, cnt) in enumerate(page_models, start=page * page_size):
+        clean_btn = m_name[:26]
+        builder.button(text=f"📂 {clean_btn} ({cnt})", callback_data=f"cmd_{b_code}_{idx}")
+    builder.adjust(1)
+
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton(text="◀ Пред.", callback_data=f"cbr_{b_code}_p{page - 1}"))
+    if total_pages > 1:
+        nav.append(types.InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
+    if (page + 1) * page_size < total:
+        nav.append(types.InlineKeyboardButton(text="След. ▶", callback_data=f"cbr_{b_code}_p{page + 1}"))
+    if nav:
+        builder.row(*nav)
+
+    builder.row(
+        types.InlineKeyboardButton(text="🔙 К брендам", callback_data="back_catalog"),
+        types.InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart"),
+    )
+
+    await callback.message.edit_text(
+        f"📱 <b>{html.escape(brand)}</b> — выберите модель (всего {total}):",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
     await callback.answer()
 
 
-# ─────────────────── СПИСОК ЗАПЧАСТЕЙ ───────────────────
+# ─────────────────── УРОВЕНЬ 3: КАТЕГОРИИ ЗАПЧАСТЕЙ МОДЕЛИ ───────────────────
 
-async def _show_parts(
+@router.callback_query(F.data.startswith("cmd_"))
+async def show_model_part_types(callback: types.CallbackQuery) -> None:
+    parts_tok = callback.data[4:].split("_")
+    b_code = parts_tok[0]
+    model_idx = int(parts_tok[1])
+
+    brand = CODE_TO_BRAND.get(b_code, b_code)
+    models = await db.get_models_by_brand(brand)
+    if model_idx >= len(models):
+        await callback.answer("Модель не найдена", show_alert=True)
+        return
+    model = models[model_idx][0]
+
+    types_list = await db.get_part_types_by_model(brand, model)
+    total_parts = sum(c for _, c in types_list)
+
+    builder = InlineKeyboardBuilder()
+    for ptype, cnt in types_list:
+        t_code = TYPE_CODES.get(ptype, "oth")
+        builder.button(text=f"⚙️ {ptype} ({cnt})", callback_data=f"ctp_{b_code}_{model_idx}_{t_code}")
+    builder.button(text=f"📦 Все запчасти модели ({total_parts})", callback_data=f"ctp_{b_code}_{model_idx}_all")
+    builder.button(text=f"🔙 К моделям {brand}", callback_data=f"cbr_{b_code}")
+    builder.button(text="🛒 Корзина", callback_data="view_cart")
+    builder.adjust(1)
+
+    await callback.message.edit_text(
+        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n"
+        f"Выберите категорию запчасти:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ─────────────────── УРОВЕНЬ 4: СПИСОК ЗАПЧАСТЕЙ ───────────────────
+
+@router.callback_query(F.data.startswith("ctp_"))
+async def show_parts_by_type(callback: types.CallbackQuery) -> None:
+    raw = callback.data[4:]
+    page = 0
+    if "_p" in raw:
+        raw, p_str = raw.rsplit("_p", 1)
+        page = int(p_str) if p_str.isdigit() else 0
+
+    tokens = raw.split("_")
+    b_code = tokens[0]
+    model_idx = int(tokens[1])
+    t_code = tokens[2]
+
+    brand = CODE_TO_BRAND.get(b_code, b_code)
+    models = await db.get_models_by_brand(brand)
+    if model_idx >= len(models):
+        await callback.answer("Модель не найдена", show_alert=True)
+        return
+    model = models[model_idx][0]
+
+    part_type = None if t_code == "all" else CODE_TO_TYPE.get(t_code, t_code)
+    await _show_parts_list(
+        callback,
+        brand=brand,
+        model=model,
+        part_type=part_type,
+        page=page,
+        b_code=b_code,
+        model_idx=model_idx,
+        t_code=t_code,
+    )
+    await callback.answer()
+
+
+async def _show_parts_list(
     callback: types.CallbackQuery,
-    category: str,
-    subcategory: str | None,
+    brand: str,
+    model: str,
+    part_type: str | None,
     page: int,
+    b_code: str = "",
+    model_idx: int = 0,
+    t_code: str = "all",
 ) -> None:
     status = await db.get_user_status(callback.from_user.id)
     is_wholesale = status == "wholesale"
 
-    parts, total = await db.get_parts_by_category(category, subcategory, page, PAGE_SIZE)
+    parts, total = await db.get_parts_by_brand_model_type(brand, model, part_type, page, PAGE_SIZE)
 
     if not parts:
         builder = InlineKeyboardBuilder()
-        back_cb = f"cat_{category}" if subcategory else "back_catalog"
-        builder.button(text="🔙 Назад", callback_data=back_cb)
-        title_target = f"подкатегории <b>{html.escape(subcategory)}</b>" if subcategory else f"категории <b>{html.escape(category)}</b>"
+        builder.button(text="🔙 Назад", callback_data=f"cmd_{b_code}_{model_idx}" if model else "back_catalog")
+        title_target = f"категории <b>{html.escape(part_type or 'Все')}</b>"
         await callback.message.edit_text(
             f"⚠️ В {title_target} пока нет запчастей.",
             reply_markup=builder.as_markup(),
@@ -171,48 +285,55 @@ async def _show_parts(
         )
         return
 
-    if subcategory:
-        title = f"📦 {html.escape(category)} → {html.escape(subcategory)}"
-        cb_prefix = f"subcat_{category}__{subcategory}"
-        back_cb = f"cat_{category}"
-    else:
-        title = f"📦 {html.escape(category)}"
-        cb_prefix = f"cat_page_{category}"
-        back_cb = "back_catalog"
-
+    type_name = part_type if part_type else "Все запчасти"
+    title = f"📦 <b>{html.escape(brand)} → {html.escape(model)} → {html.escape(type_name)}</b>"
     if is_wholesale:
-        title += " (Оптовые цены)"
+        title += " <i>(Оптовые цены)</i>"
 
-    text = _parts_text_html(parts, is_wholesale, title, page, total, PAGE_SIZE)
+    cb_prefix = f"ctp_{b_code}_{model_idx}_{t_code}"
+    back_cb = f"cmd_{b_code}_{model_idx}" if model else "back_catalog"
 
-    # Кнопки детального просмотра каждой запчасти
+    total_pages = max(1, -(-total // PAGE_SIZE))
+    text = f"{title}\n<i>Страница {page + 1} из {total_pages} (всего {total} поз.)</i>\n\n"
+    for row in parts:
+        part_id, name, ret_price, wh_price, qty = row[:5]
+        price = wh_price if is_wholesale else ret_price
+        stock_badge = "✅" if qty > 0 else "❌"
+        status_txt = f"{qty} шт." if qty > 0 else "нет в наличии"
+        text += (
+            f"{stock_badge} <b>{html.escape(name)}</b>\n"
+            f"   Цена: <b>{price:,.0f} {CURRENCY}</b> | Наличие: <code>{status_txt}</code>\n\n"
+        )
+
     detail_builder = InlineKeyboardBuilder()
     for row in parts:
         part_id, name, ret_price, wh_price, qty = row[:5]
         price = wh_price if is_wholesale else ret_price
         stock_badge = "✅" if qty > 0 else "❌"
+        btn_name = name[:26]
         detail_builder.button(
-            text=f"{stock_badge} {name[:28]} — {price:.0f} {CURRENCY}",
+            text=f"{stock_badge} {btn_name} — {price:,.0f} {CURRENCY}",
             callback_data=f"part_detail_{part_id}",
         )
     detail_builder.adjust(1)
 
-    # Пагинация
     pag_builder = _pagination_builder(cb_prefix, page, total, PAGE_SIZE, back_cb)
     detail_builder.attach(pag_builder)
 
     await callback.message.edit_text(text, reply_markup=detail_builder.as_markup(), parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("cat_page_"))
-async def cat_page(callback: types.CallbackQuery) -> None:
-    raw = callback.data[9:]
-    page = 0
-    if "_p" in raw:
-        raw, p_str = raw.rsplit("_p", 1)
-        page = int(p_str) if p_str.isdigit() else 0
-    await _show_parts(callback, category=raw, subcategory=None, page=page)
-    await callback.answer()
+# ─────────────────── СОВМЕСТИМОСТЬ СО СТАРЫМИ CALLBACKS ───────────────────
+
+@router.callback_query(F.data.startswith("cat_"))
+async def show_category_fallback(callback: types.CallbackQuery) -> None:
+    cat = callback.data[4:]
+    b_code = BRAND_CODES.get(cat)
+    if b_code:
+        callback.data = f"cbr_{b_code}"
+        await show_brand_models(callback)
+    else:
+        await back_to_catalog(callback)
 
 
 # ─────────────────── КАРТОЧКА ЗАПЧАСТИ ───────────────────
@@ -273,7 +394,8 @@ async def show_part_detail(callback: types.CallbackQuery) -> None:
     if role in ("admin", "warehouse_manager"):
         builder.button(text="✏️ Редактировать запчасть", callback_data=f"adm_edit_part_{pid}")
 
-    back_cb = f"cat_{category}"
+    b_code = BRAND_CODES.get(category, "")
+    back_cb = f"cbr_{b_code}" if b_code else "back_catalog"
     builder.button(text="🔙 Назад к списку", callback_data=back_cb)
     builder.adjust(1)
 

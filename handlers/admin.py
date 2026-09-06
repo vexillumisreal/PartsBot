@@ -982,57 +982,281 @@ async def show_abc_analysis(target: types.Message | types.CallbackQuery) -> None
 @router.message(F.text == "⏳ Прогноз закупок")
 @router.callback_query(F.data == "adm_procure_forecast")
 async def show_procurement_forecast(target: types.Message | types.CallbackQuery) -> None:
+    if isinstance(target, types.CallbackQuery):
+        await target.answer()
+
     role = await db.get_user_role(target.from_user.id)
     if role not in ("admin", "warehouse_manager"):
         msg = "❌ Нет прав для просмотра прогноза закупок."
         if isinstance(target, types.CallbackQuery):
-            await target.answer(msg, show_alert=True)
+            await target.message.answer(msg)
         else:
             await target.answer(msg)
         return
 
-    forecast = await db.get_procurement_forecast(days_window=30)
-    if not forecast:
-        text = "✅ <b>На складе нет дефицита!</b> Все позиции укомплектованы."
-    else:
-        empty_cnt = sum(1 for x in forecast if x["urgency"] == "CRITICAL_EMPTY")
-        high_cnt = sum(1 for x in forecast if x["urgency"] == "HIGH")
-        med_cnt = sum(1 for x in forecast if x["urgency"] == "MEDIUM")
+    try:
+        forecast = await db.get_procurement_forecast(days_window=30)
+        if not forecast:
+            text = "✅ <b>На складе нет дефицита!</b> Все позиции укомплектованы."
+        else:
+            empty_cnt = sum(1 for x in forecast if x["urgency"] == "CRITICAL_EMPTY")
+            high_cnt = sum(1 for x in forecast if x["urgency"] == "HIGH")
+            med_cnt = sum(1 for x in forecast if x["urgency"] == "MEDIUM")
 
-        text = (
-            "⏳ <b>ПРОГНОЗ ЗАКУПОК И ДЕФИЦИТА (SMART FORECAST)</b>\n"
-            "<i>Расчёт остатка дней при текущем темпе продаж за 30 дней</i>\n\n"
-            f"🚨 Закончились полностью (0 шт.): <b>{empty_cnt} поз.</b>\n"
-            f"⚠️ Закончатся менее чем за 7 дней: <b>{high_cnt} поз.</b>\n"
-            f"⏳ Хватит на 7-14 дней: <b>{med_cnt} поз.</b>\n\n"
-            "📋 <b>Список первоочередных дозакупок:</b>\n\n"
-        )
-
-        critical_items = [x for x in forecast if x["urgency"] in ("CRITICAL_EMPTY", "HIGH", "MEDIUM")][:10]
-        if not critical_items:
-            critical_items = forecast[:8]
-
-        for it in critical_items:
-            days_str = f"хватит на {it['days_left']} дн." if it["days_left"] < 900 else "нет продаж"
-            text += (
-                f"{it['urgency_label']} <b>{html.escape(it['name'])}</b>\n"
-                f"   📦 Остаток: <b>{it['stock_qty']} шт.</b> ({days_str})\n"
-                f"   📉 Расход: <code>{it['daily_burn']} шт./день</code> | Рекомендовано заказать: <b>+{it['recommended_order']} шт.</b>\n"
-                f"   🏭 Поставщик: <i>{html.escape(it['supplier'] or 'Не указан')}</i>\n\n"
+            text = (
+                "⏳ <b>ПРОГНОЗ ЗАКУПОК И ДЕФИЦИТА (SMART FORECAST)</b>\n"
+                "<i>Расчёт остатка дней при текущем темпе продаж за 30 дней</i>\n\n"
+                f"🚨 Закончились полностью (0 шт.): <b>{empty_cnt} поз.</b>\n"
+                f"⚠️ Закончатся менее чем за 7 дней: <b>{high_cnt} поз.</b>\n"
+                f"⏳ Хватит на 7-14 дней: <b>{med_cnt} поз.</b>\n\n"
+                "📋 <b>Список первоочередных позиций к закупке:</b>\n\n"
             )
 
+            critical_items = [x for x in forecast if x["urgency"] in ("CRITICAL_EMPTY", "HIGH", "MEDIUM")][:8]
+            if not critical_items:
+                critical_items = forecast[:6]
+
+            for it in critical_items:
+                days_str = f"хватит на {it['days_left']} дн." if (it["days_left"] > 0 and it["days_left"] < 900) else ("закончился" if it["stock_qty"] == 0 else "нет продаж")
+                text += (
+                    f"{it['urgency_label']} <b>{html.escape(it['name'][:34])}</b>\n"
+                    f"   📦 Остаток: <b>{it['stock_qty']} шт.</b> ({days_str})\n"
+                    f"   📉 Расход: <code>{it['daily_burn']} шт./дн.</code> | Рекомендовано: <b>+{it['recommended_order']} шт.</b>\n"
+                    f"   🏭 Поставщик: <i>{html.escape(it['supplier'] or 'Не указан')}</i>\n\n"
+                )
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
+        builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
+        builder.button(text="📥 Скачать Аналитику (CSV)", callback_data="export_analytics_csv")
+        builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+        builder.adjust(2, 1, 1)
+
+        if isinstance(target, types.CallbackQuery):
+            await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        else:
+            await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        logger.exception("show_procurement_forecast error: %s", e)
+        err_builder = InlineKeyboardBuilder()
+        err_builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+        err_text = "⚠️ <b>Не удалось сформировать прогноз закупок.</b>\nПопробуйте снова через несколько минут."
+        if isinstance(target, types.CallbackQuery):
+            await target.message.edit_text(err_text, reply_markup=err_builder.as_markup(), parse_mode="HTML")
+        else:
+            await target.answer(err_text, reply_markup=err_builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── УПРАВЛЕНИЕ ЗАКАЗАМИ В АДМИНКЕ ───────────────────
+
+ORDER_STATUSES: dict[str, str] = {
+    "pending": "⏳ В ожидании",
+    "processing": "📦 В обработке",
+    "shipped": "🚚 Отправлен / Готов",
+    "completed": "✅ Выполнен",
+    "cancelled": "❌ Отменен",
+}
+
+
+@router.message(F.text == "🛍️ Заказы клиентов")
+@router.callback_query(F.data == "adm_orders_list")
+@router.callback_query(F.data.startswith("adm_ord_list_"))
+async def adm_orders_list_handler(target: types.Message | types.CallbackQuery) -> None:
+    if isinstance(target, types.CallbackQuery):
+        await target.answer()
+
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "sales_manager"):
+        msg = "❌ Нет прав для просмотра заказов."
+        if isinstance(target, types.CallbackQuery):
+            await target.message.answer(msg)
+        else:
+            await target.answer(msg)
+        return
+
+    status_filter = "all"
+    page = 0
+    if isinstance(target, types.CallbackQuery) and target.data.startswith("adm_ord_list_"):
+        raw = target.data[13:]
+        if "_p" in raw:
+            status_filter, p_str = raw.rsplit("_p", 1)
+            page = int(p_str) if p_str.isdigit() else 0
+        else:
+            status_filter = raw
+
+    page_size = 6
+    db_status = None if status_filter == "all" else status_filter
+    orders, total = await db.get_all_orders_paged(page=page, page_size=page_size, status=db_status)
+
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+
+    status_title = ORDER_STATUSES.get(status_filter, "Все заказы")
+    text = (
+        f"🛍️ <b>УПРАВЛЕНИЕ ЗАКАЗАМИ КЛИЕНТОВ</b>\n"
+        f"Фильтр: <b>{status_title}</b> | Стр. {page + 1} из {total_pages} (всего: {total})\n\n"
+    )
+
     builder = InlineKeyboardBuilder()
-    builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
-    builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
-    builder.button(text="📥 Скачать Аналитику (CSV)", callback_data="export_analytics_csv")
-    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
-    builder.adjust(2, 1, 1)
+
+    if not orders:
+        text += "<i>Заказов с таким статусом пока нет.</i>\n\n"
+    else:
+        for o in orders:
+            o_id = o["id"]
+            st = o.get("status", "pending")
+            st_icon = {"pending": "⏳", "processing": "📦", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}.get(st, "📋")
+            time_str = o.get("created_at", "")[:16]
+            c_name = o.get("user_name") or f"Клиент #{o['user_id']}"
+            amt = o.get("total_amount", 0)
+
+            text += (
+                f"{st_icon} <b>Заказ #{o_id}</b> ({time_str})\n"
+                f"   👤 {html.escape(c_name)} | Сумма: <b>{amt:,.0f} {CURRENCY}</b>\n"
+                f"   Статус: <code>{st}</code>\n\n"
+            )
+            btn_txt = f"{st_icon} #{o_id} — {amt:,.0f} {CURRENCY} ({html.escape(c_name)[:14]})"
+            builder.button(text=btn_txt, callback_data=f"adm_ord_v_{o_id}")
+        builder.adjust(1)
+
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton(text="◀ Пред.", callback_data=f"adm_ord_list_{status_filter}_p{page - 1}"))
+    if total_pages > 1:
+        nav.append(types.InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
+    if (page + 1) * page_size < total:
+        nav.append(types.InlineKeyboardButton(text="След. ▶", callback_data=f"adm_ord_list_{status_filter}_p{page + 1}"))
+    if nav:
+        builder.row(*nav)
+
+    filter_row = [
+        types.InlineKeyboardButton(text="Все", callback_data="adm_ord_list_all"),
+        types.InlineKeyboardButton(text="⏳ Новые", callback_data="adm_ord_list_pending"),
+        types.InlineKeyboardButton(text="📦 В работе", callback_data="adm_ord_list_processing"),
+        types.InlineKeyboardButton(text="✅ Завершенные", callback_data="adm_ord_list_completed"),
+    ]
+    builder.row(*filter_row)
+
+    builder.row(types.InlineKeyboardButton(text="⚙️ В админ-панель", callback_data="admin_dashboard"))
 
     if isinstance(target, types.CallbackQuery):
         await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-        await target.answer()
     else:
         await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_ord_v_"))
+async def adm_order_view_handler(callback: types.CallbackQuery) -> None:
+    await callback.answer()
+    order_id = int(callback.data[10:])
+    order = await db.get_order_details(order_id)
+    if not order:
+        await callback.message.answer("❌ Заказ не найден.")
+        return
+
+    st = order.get("status", "pending")
+    st_name = ORDER_STATUSES.get(st, st)
+    st_icon = {"pending": "⏳", "processing": "📦", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}.get(st, "📋")
+    pay_status = "Оплачен 💳" if order.get("payment_status") == "paid" else "Не оплачен ⏳"
+
+    items_text = ""
+    for idx, it in enumerate(order.get("items", []), 1):
+        pname = html.escape(it.get("part_name", ""))
+        iqty = it.get("quantity", 0)
+        iprice = it.get("price", 0)
+        items_text += f"{idx}. <b>{pname}</b>\n   <code>{iqty} шт. × {iprice:,.0f} = {iqty * iprice:,.0f} {CURRENCY}</code>\n"
+
+    deliv_method = {"pickup": "Самовывоз со склада", "courier": "Доставка курьером", "cdek": "СДЭК"}.get(order.get("delivery_method"), order.get("delivery_method"))
+    pay_method = {"cash": "При получении", "sbp": "СБП (перевод/QR)", "invoice": "По счёту (юрлицо)"}.get(order.get("payment_method"), order.get("payment_method"))
+
+    text = (
+        f"{st_icon} <b>КАРТОЧКА ЗАКАЗА #{order_id}</b>\n\n"
+        f"📅 Создан: <code>{order.get('created_at', '')[:19]}</code>\n"
+        f"👤 Клиент: <b>{html.escape(order.get('user_name', ''))}</b> (ID: <code>{order.get('user_id')}</code>)\n"
+        f"📞 Контакт: <code>{html.escape(order.get('contact', 'Не указан'))}</code>\n"
+        f"🚚 Доставка: <b>{deliv_method}</b>\n"
+        f"📍 Адрес: <i>{html.escape(order.get('delivery_address') or 'Склад Казань')}</i>\n"
+        f"💳 Оплата: <b>{pay_method}</b> ({pay_status})\n"
+        f"📝 Комментарий: <i>{html.escape(order.get('notes') or 'Нет')}</i>\n\n"
+        f"📦 <b>Состав заказа:</b>\n{items_text}\n"
+        f"💰 <b>ИТОГО К ОПЛАТЕ: {order.get('total_amount', 0):,.0f} {CURRENCY}</b>\n"
+        f"📊 Текущий статус: <b>{st_name}</b>"
+    )
+
+    builder = InlineKeyboardBuilder()
+
+    builder.button(text="⏳ В ожидании", callback_data=f"adm_ost_{order_id}_pending")
+    builder.button(text="📦 В обработку", callback_data=f"adm_ost_{order_id}_processing")
+    builder.button(text="🚚 Отправлен", callback_data=f"adm_ost_{order_id}_shipped")
+    builder.button(text="✅ Выполнен", callback_data=f"adm_ost_{order_id}_completed")
+    builder.button(text="❌ Отменить", callback_data=f"adm_ost_{order_id}_cancelled")
+
+    if order.get("payment_status") == "paid":
+        builder.button(text="⏳ Отметить: НЕ оплачен", callback_data=f"adm_opay_{order_id}_unpaid")
+    else:
+        builder.button(text="💳 Отметить: ОПЛАЧЕН", callback_data=f"adm_opay_{order_id}_paid")
+
+    builder.button(text="🔙 К списку заказов", callback_data="adm_orders_list")
+    builder.adjust(3, 2, 1, 1)
+
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("adm_ost_"))
+async def adm_order_set_status_handler(callback: types.CallbackQuery, bot: Bot) -> None:
+    parts = callback.data[8:].split("_")
+    order_id = int(parts[0])
+    new_status = parts[1]
+
+    order = await db.get_order_details(order_id)
+    if not order:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
+
+    deduct = (new_status == "completed" and order.get("status") != "completed")
+    ok = await db.update_order_status(order_id, new_status, deduct_stock=deduct, staff_id=callback.from_user.id)
+    if ok:
+        await callback.answer(f"Статус заказа #{order_id} изменён на '{new_status}'!", show_alert=True)
+        st_name = ORDER_STATUSES.get(new_status, new_status)
+        try:
+            await bot.send_message(
+                order["user_id"],
+                f"🔔 <b>Статус вашего заказа #{order_id} обновлен!</b>\n\n"
+                f"Новый статус: <b>{st_name}</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    else:
+        await callback.answer("❌ Ошибка при обновлении статуса", show_alert=True)
+
+    callback.data = f"adm_ord_v_{order_id}"
+    await adm_order_view_handler(callback)
+
+
+@router.callback_query(F.data.startswith("adm_opay_"))
+async def adm_order_set_pay_handler(callback: types.CallbackQuery) -> None:
+    parts = callback.data[9:].split("_")
+    order_id = int(parts[0])
+    new_pay = parts[1]
+
+    ok = await db.set_order_payment_status(order_id, new_pay)
+    if ok:
+        pay_label = "Оплачен" if new_pay == "paid" else "Не оплачен"
+        await callback.answer(f"Статус оплаты заказа #{order_id} изменен: {pay_label}!", show_alert=True)
+    else:
+        await callback.answer("❌ Ошибка при обновлении оплаты", show_alert=True)
+
+    callback.data = f"adm_ord_v_{order_id}"
+    await adm_order_view_handler(callback)
+
+
+@router.callback_query(F.data == "start_sin")
+async def start_sin_callback_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Обработчик кнопки 'Оприходовать' из оповещения о низком остатке."""
+    await callback.answer()
+    from handlers.stock import start_stock_in
+    await start_stock_in(callback.message, state)
 
 
 # ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ТОП КЛИЕНТОВ ───────────────────

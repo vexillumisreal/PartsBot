@@ -216,6 +216,7 @@ async def set_role_cb(callback: types.CallbackQuery, state: FSMContext, bot: Bot
 # ─────────────────── ВВОД ID ВРУЧНУЮ ───────────────────
 
 @router.callback_query(F.data == "role_manual_id")
+@router.callback_query(F.data == "user_search_start")
 async def manual_id_prompt(callback: types.CallbackQuery, state: FSMContext) -> None:
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="admin_users_list")

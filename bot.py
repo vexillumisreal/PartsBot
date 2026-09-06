@@ -13,7 +13,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import db
-from config import BOT_TOKEN, ADMIN_ID
+from config import BOT_TOKEN, ADMIN_ID, ADMIN_IDS
 from handlers import common, catalog, stock, admin, roles, orders
 
 # ─────────────────── Logging ───────────────────────────────────
@@ -44,11 +44,11 @@ dp.include_router(roles.router)
 # ─────────────────── Startup / Shutdown ───────────────────────
 async def on_startup() -> None:
     await db.init_db()
-    if ADMIN_ID:
-        await db.add_user(ADMIN_ID, "admin", "Administrator")
-        await db.set_user_role(ADMIN_ID, "admin")
-        await db.set_user_status(ADMIN_ID, "wholesale")
-        logger.info("Суперадминистратор ID=%s активирован.", ADMIN_ID)
+    for a_id in ADMIN_IDS:
+        await db.add_user(a_id, "admin", "Administrator")
+        await db.set_user_role(a_id, "admin")
+        await db.set_user_status(a_id, "wholesale")
+        logger.info("Суперадминистратор ID=%s активирован.", a_id)
 
     me = await bot.get_me()
     logger.info("Бот успешно запущен: @%s (id=%s)", me.username, me.id)

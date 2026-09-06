@@ -7,7 +7,7 @@ import os
 import csv
 import logging
 import aiosqlite
-from config import ADMIN_ID, EXPORT_DIR
+from config import ADMIN_ID, ADMIN_IDS, EXPORT_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ async def init_db() -> None:
             )
         """)
 
-        # Индексы
+        # Индексы базовых таблиц
         await db.execute("CREATE INDEX IF NOT EXISTS idx_parts_category ON parts(category, subcategory)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_stock_history_date ON stock_history(date)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id)")
@@ -147,9 +147,11 @@ async def init_db() -> None:
             ("users", "notifications_enabled", "INTEGER DEFAULT 1"),
             ("parts", "is_active", "INTEGER DEFAULT 1"),
             ("parts", "subcategory", "TEXT DEFAULT ''"),
+            ("parts", "part_type", "TEXT DEFAULT ''"),
             ("parts", "low_stock_threshold", "INTEGER DEFAULT 3"),
             ("stock_history", "user_id", "INTEGER"),
             ("stock_history", "type", "TEXT DEFAULT 'incoming'"),
+            ("stock_history", "price", "REAL DEFAULT 0"),
             ("orders", "delivery_method", "TEXT DEFAULT 'pickup'"),
             ("orders", "delivery_address", "TEXT DEFAULT ''"),
             ("orders", "payment_method", "TEXT DEFAULT 'cash'"),
@@ -167,17 +169,21 @@ async def init_db() -> None:
                 await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
                 logger.info("Миграция: добавлена колонка %s.%s", table, column)
 
-        # Синхронизация ADMIN_ID
-        if ADMIN_ID and ADMIN_ID > 0:
-            async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (ADMIN_ID,)) as cur:
-                if await cur.fetchone():
-                    await db.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (ADMIN_ID,))
-                else:
-                    await db.execute(
-                        "INSERT INTO users (user_id, role, status) VALUES (?, 'admin', 'wholesale')",
-                        (ADMIN_ID,),
-                    )
-            logger.info("ADMIN_ID=%s синхронизирован с ролью 'admin'", ADMIN_ID)
+        # Индексы колонок после миграций
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_parts_hierarchy ON parts(category, subcategory, part_type)")
+
+        # Синхронизация администраторов
+        for aid in ADMIN_IDS:
+            if aid and aid > 0:
+                async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (aid,)) as cur:
+                    if await cur.fetchone():
+                        await db.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (aid,))
+                    else:
+                        await db.execute(
+                            "INSERT INTO users (user_id, role, status) VALUES (?, 'admin', 'wholesale')",
+                            (aid,),
+                        )
+                logger.info("ADMIN_ID=%s синхронизирован с ролью 'admin'", aid)
 
         await db.commit()
         logger.info("БД инициализирована: %s", DB_NAME)
@@ -185,8 +191,13 @@ async def init_db() -> None:
 
 # ─────────────────────────── USERS ───────────────────────────
 
+def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором по конфигу."""
+    return user_id in ADMIN_IDS or (ADMIN_ID and user_id == ADMIN_ID)
+
+
 async def add_user(user_id: int, username: str = "", full_name: str = "") -> None:
-    role = "admin" if (ADMIN_ID and user_id == ADMIN_ID) else "user"
+    role = "admin" if is_admin(user_id) else "user"
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
             exists = await cur.fetchone()
@@ -200,7 +211,7 @@ async def add_user(user_id: int, username: str = "", full_name: str = "") -> Non
                 """,
                 (username, full_name, user_id),
             )
-            if ADMIN_ID and user_id == ADMIN_ID:
+            if is_admin(user_id):
                 await db.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (user_id,))
         else:
             await db.execute(
@@ -234,7 +245,7 @@ async def toggle_user_status(user_id: int) -> str:
 
 
 async def get_user_role(user_id: int) -> str:
-    if ADMIN_ID and user_id == ADMIN_ID:
+    if is_admin(user_id):
         return "admin"
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT role FROM users WHERE user_id = ?", (user_id,)) as cur:
@@ -439,6 +450,108 @@ async def add_part(
         return cur.lastrowid
 
 
+async def get_brands() -> list[tuple[str, int]]:
+    """Возвращает список брендов (category) и количество активных запчастей."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT category, COUNT(*) FROM parts
+            WHERE is_active = 1 AND category IS NOT NULL AND category != ''
+            GROUP BY category
+            ORDER BY COUNT(*) DESC, category ASC
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+            return [(r[0], r[1]) for r in rows]
+
+
+async def get_models_by_brand(brand: str) -> list[tuple[str, int]]:
+    """Возвращает список моделей (subcategory) и количество запчастей для заданного бренда."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT subcategory, COUNT(*) FROM parts
+            WHERE category = ? AND is_active = 1 AND subcategory IS NOT NULL AND subcategory != ''
+            GROUP BY subcategory
+            ORDER BY subcategory ASC
+            """,
+            (brand,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [(r[0], r[1]) for r in rows]
+
+
+async def get_part_types_by_model(brand: str, model: str) -> list[tuple[str, int]]:
+    """Возвращает список типов запчастей (part_type) и их количество для заданного бренда и модели."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            """
+            SELECT COALESCE(NULLIF(part_type, ''), 'Разное'), COUNT(*) FROM parts
+            WHERE category = ? AND subcategory = ? AND is_active = 1
+            GROUP BY COALESCE(NULLIF(part_type, ''), 'Разное')
+            ORDER BY COUNT(*) DESC
+            """,
+            (brand, model),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [(r[0], r[1]) for r in rows]
+
+
+async def get_parts_by_brand_model_type(
+    brand: str,
+    model: str,
+    part_type: str | None = None,
+    page: int = 0,
+    page_size: int = 8,
+) -> tuple[list[tuple], int]:
+    """Возвращает страницу запчастей для заданного бренда, модели и опционально типа запчасти."""
+    offset = page * page_size
+    async with aiosqlite.connect(DB_NAME) as db:
+        if part_type and part_type != "Все":
+            async with db.execute(
+                """
+                SELECT COUNT(*) FROM parts
+                WHERE category = ? AND subcategory = ?
+                  AND (part_type = ? OR (part_type = '' AND ? = 'Разное'))
+                  AND is_active = 1
+                """,
+                (brand, model, part_type, part_type),
+            ) as cur:
+                total = (await cur.fetchone())[0]
+            async with db.execute(
+                """
+                SELECT id, name, retail_price, wholesale_price, quantity, part_type
+                FROM parts
+                WHERE category = ? AND subcategory = ?
+                  AND (part_type = ? OR (part_type = '' AND ? = 'Разное'))
+                  AND is_active = 1
+                ORDER BY name LIMIT ? OFFSET ?
+                """,
+                (brand, model, part_type, part_type, page_size, offset),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute(
+                """
+                SELECT COUNT(*) FROM parts
+                WHERE category = ? AND subcategory = ? AND is_active = 1
+                """,
+                (brand, model),
+            ) as cur:
+                total = (await cur.fetchone())[0]
+            async with db.execute(
+                """
+                SELECT id, name, retail_price, wholesale_price, quantity, part_type
+                FROM parts
+                WHERE category = ? AND subcategory = ? AND is_active = 1
+                ORDER BY name LIMIT ? OFFSET ?
+                """,
+                (brand, model, page_size, offset),
+            ) as cur:
+                rows = await cur.fetchall()
+        return list(rows), total
+
+
 async def get_subcategories(category: str) -> list[str]:
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
@@ -624,6 +737,7 @@ async def add_stock_movement(
     supplier: str | None = None,
     notes: str | None = None,
     user_id: int | None = None,
+    cost_price: float = 0.0,
 ) -> bool:
     try:
         async with aiosqlite.connect(DB_NAME) as db:
@@ -638,20 +752,30 @@ async def add_stock_movement(
             else:
                 delta = quantity
 
+            if cost_price > 0:
+                await db.execute(
+                    """
+                    UPDATE parts
+                    SET quantity = quantity + ?, cost_price = ?, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (delta, cost_price, part_id),
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE parts
+                    SET quantity = quantity + ?, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (delta, part_id),
+                )
             await db.execute(
                 """
-                UPDATE parts
-                SET quantity = quantity + ?, last_updated = CURRENT_TIMESTAMP
-                WHERE id = ?
+                INSERT INTO stock_history (part_id, quantity, supplier, notes, type, user_id, price)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (delta, part_id),
-            )
-            await db.execute(
-                """
-                INSERT INTO stock_history (part_id, quantity, supplier, notes, type, user_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (part_id, quantity, supplier, notes, movement_type, user_id),
+                (part_id, quantity, supplier, notes, movement_type, user_id, cost_price),
             )
             await db.commit()
             return True
@@ -797,6 +921,44 @@ async def get_all_orders(status: str | None = None, limit: int = 20) -> list[dic
             ) as cur:
                 rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+
+async def get_all_orders_paged(
+    page: int = 0,
+    page_size: int = 8,
+    status: str | None = None,
+) -> tuple[list[dict], int]:
+    """Возвращает страницу заказов с пагинацией и общее количество."""
+    offset = page * page_size
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        if status and status != "all":
+            async with db.execute("SELECT COUNT(*) FROM orders WHERE status = ?", (status,)) as cur:
+                total = (await cur.fetchone())[0]
+            async with db.execute(
+                """
+                SELECT id, user_id, user_name, contact, total_amount, status,
+                       delivery_method, delivery_address, payment_method, payment_status, created_at
+                FROM orders WHERE status = ?
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
+                """,
+                (status, page_size, offset),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with db.execute("SELECT COUNT(*) FROM orders") as cur:
+                total = (await cur.fetchone())[0]
+            async with db.execute(
+                """
+                SELECT id, user_id, user_name, contact, total_amount, status,
+                       delivery_method, delivery_address, payment_method, payment_status, created_at
+                FROM orders
+                ORDER BY created_at DESC LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(r) for r in rows], total
 
 
 async def get_order_details(order_id: int) -> dict | None:
