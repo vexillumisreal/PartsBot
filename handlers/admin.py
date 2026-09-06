@@ -88,8 +88,12 @@ async def render_admin_dashboard(target: types.Message | types.CallbackQuery) ->
     builder.button(text=f"🛍️ Заказы ({stats['pending_orders']})", callback_data="adm_orders_list")
     builder.button(text=f"💼 Заявки на опт ({stats['pending_wholesale']})", callback_data="admin_wholesale_reqs")
     builder.button(text="👥 Пользователи", callback_data="admin_users_list")
+    builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
+    builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
+    builder.button(text="⏳ Прогноз закупок", callback_data="adm_procure_forecast")
+    builder.button(text="👥 Топ клиентов", callback_data="adm_top_clients")
     builder.button(text="📊 Финансовый анализ", callback_data="adm_fin_analysis")
-    builder.button(text="📈 Движение товара", callback_data="adm_stock_movements")
+    builder.button(text="📦 Движение товара", callback_data="adm_stock_movements")
     builder.button(text="🏢 Анализ поставщиков", callback_data="adm_suppliers")
     builder.button(text="📥 Экспорт в CSV", callback_data="adm_export_menu")
     builder.button(text="📢 Рассылка клиентам", callback_data="adm_broadcast_start")
@@ -699,6 +703,7 @@ async def show_supplier_analysis(target: types.Message | types.CallbackQuery) ->
 @router.callback_query(F.data == "adm_export_menu")
 async def export_menu(target: types.Message | types.CallbackQuery) -> None:
     builder = InlineKeyboardBuilder()
+    builder.button(text="📊 Аналитика продаж и KPI (CSV)", callback_data="export_analytics_csv")
     builder.button(text="📦 Экспорт остатков склада (CSV)", callback_data="export_stock_csv")
     builder.button(text="📈 Экспорт движения товара (CSV)", callback_data="export_movements_csv")
     builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
@@ -710,6 +715,26 @@ async def export_menu(target: types.Message | types.CallbackQuery) -> None:
         await target.answer()
     else:
         await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "export_analytics_csv")
+async def export_analytics_csv_cb(callback: types.CallbackQuery) -> None:
+    await callback.answer("Формирование комплексной аналитики...")
+    filepath = await db.export_analytics_csv()
+    doc = FSInputFile(filepath, filename="Аналитика_Продаж_PartsBot.csv")
+    await callback.message.answer_document(
+        doc,
+        caption=(
+            "📊 <b>Комплексная аналитика продаж PartsBot</b>\n\n"
+            "Файл включает 4 аналитических блока:\n"
+            "1. 📈 Финансовые KPI (выручка, средний чек, доставка, оплата)\n"
+            "2. 👥 Топ клиентов (LTV и повторные заказы)\n"
+            "3. 🏆 ABC-анализ ассортимента (ключевые позиции и неликвид)\n"
+            "4. ⏳ План-прогноз потребности в закупках (на 30 дней)\n\n"
+            "<i>Формат: CSV (разделитель «;», кодировка UTF-8 с BOM для мгновенного открытия в Excel).</i>"
+        ),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "export_stock_csv")
@@ -818,3 +843,238 @@ async def execute_broadcast(callback: types.CallbackQuery, state: FSMContext, bo
         parse_mode="HTML",
     )
     await render_admin_dashboard(callback.message)
+
+
+# ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: KPI И ПРОДАЖИ ───────────────────
+
+@router.message(F.text == "📈 Продажи и KPI")
+@router.callback_query(F.data == "adm_sales_kpi")
+async def show_sales_kpi(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "sales_manager"):
+        msg = "❌ Нет прав для просмотра аналитики продаж."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    data = await db.get_sales_kpi()
+    t = data.get("today", {})
+    w = data.get("week", {})
+    m = data.get("month", {})
+    tot = data.get("all_time", {})
+
+    del_dist = data.get("delivery_dist", {})
+    pay_dist = data.get("payment_dist", {})
+
+    text = (
+        "📈 <b>ДИНАМИКА ПРОДАЖ И ФИНАНСОВЫЕ KPI</b>\n\n"
+        "📅 <b>Сегодня:</b>\n"
+        f"• Выручка: <b>{t.get('revenue', 0):,.0f} {CURRENCY}</b>\n"
+        f"• Оформлено заказов: <b>{t.get('orders_count', 0)} шт.</b>\n"
+        f"• Средний чек: <b>{t.get('avg_check', 0):,.0f} {CURRENCY}</b>\n\n"
+        "🗓️ <b>За 7 дней (неделя):</b>\n"
+        f"• Выручка: <b>{w.get('revenue', 0):,.0f} {CURRENCY}</b>\n"
+        f"• Заказов: <b>{w.get('orders_count', 0)} шт.</b>\n"
+        f"• Средний чек: <b>{w.get('avg_check', 0):,.0f} {CURRENCY}</b>\n\n"
+        "📊 <b>За 30 дней (месяц):</b>\n"
+        f"• Выручка: <b>{m.get('revenue', 0):,.0f} {CURRENCY}</b>\n"
+        f"• Заказов: <b>{m.get('orders_count', 0)} шт.</b>\n"
+        f"• Средний чек: <b>{m.get('avg_check', 0):,.0f} {CURRENCY}</b>\n\n"
+        "🏆 <b>За всё время:</b>\n"
+        f"• Суммарный оборот: <b>{tot.get('revenue', 0):,.0f} {CURRENCY}</b>\n"
+        f"• Успешных заказов: <b>{tot.get('orders_count', 0)} шт.</b>\n"
+        f"• Средний чек: <b>{tot.get('avg_check', 0):,.0f} {CURRENCY}</b>\n\n"
+        "🚚 <b>Способы доставки:</b>\n"
+        f"• 🏬 Самовывоз: <b>{del_dist.get('pickup', 0)}</b> | "
+        f"🚴 Курьер: <b>{del_dist.get('courier', 0)}</b> | "
+        f"📦 СДЭК/ТК: <b>{del_dist.get('cdek', 0)}</b>\n\n"
+        "💳 <b>Способы оплаты:</b>\n"
+        f"• 💵 При получении: <b>{pay_dist.get('cash', 0)}</b> | "
+        f"⚡ СБП: <b>{pay_dist.get('sbp', 0)}</b>\n"
+        # f"• 🏢 Безнал (счёт): <b>{pay_dist.get('invoice', 0)}</b>\n"  # TODO: продолжим позже
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
+    builder.button(text="⏳ Прогноз закупок", callback_data="adm_procure_forecast")
+    builder.button(text="👥 Топ клиентов", callback_data="adm_top_clients")
+    builder.button(text="📥 Скачать Аналитику (CSV)", callback_data="export_analytics_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(2, 1, 1, 1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ABC-АНАЛИЗ ───────────────────
+
+@router.message(F.text == "🏆 ABC-анализ")
+@router.callback_query(F.data == "adm_abc_analysis")
+async def show_abc_analysis(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "sales_manager"):
+        msg = "❌ Нет прав для просмотра аналитики."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    data = await db.get_abc_analysis()
+    tot_rev = data.get("total_revenue", 0)
+    counts = data.get("counts", {})
+    revs = data.get("revenue", {})
+
+    pct_a = (revs.get('A', 0) / tot_rev * 100) if tot_rev > 0 else 0
+    pct_b = (revs.get('B', 0) / tot_rev * 100) if tot_rev > 0 else 0
+    pct_c = (revs.get('C', 0) / tot_rev * 100) if tot_rev > 0 else 0
+
+    text = (
+        "🏆 <b>ABC-АНАЛИЗ АССОРТИМЕНТА (МАТРИЦА ПРИБЫЛИ)</b>\n"
+        "<i>Классификация запчастей по правилу Парето (вклад в общую выручку)</i>\n\n"
+        f"📊 <b>Сводка по категориям:</b>\n"
+        f"🟢 <b>Группа A</b> (Топ-выручка): <b>{counts.get('A', 0)} поз.</b> — <b>{revs.get('A', 0):,.0f} {CURRENCY}</b> ({pct_a:.1f}%)\n"
+        f"🟡 <b>Группа B</b> (Стабильный спрос): <b>{counts.get('B', 0)} поз.</b> — <b>{revs.get('B', 0):,.0f} {CURRENCY}</b> ({pct_b:.1f}%)\n"
+        f"⚪ <b>Группа C</b> (Неликвид / Редкий спрос): <b>{counts.get('C', 0)} поз.</b> — <b>{revs.get('C', 0):,.0f} {CURRENCY}</b> ({pct_c:.1f}%)\n\n"
+    )
+
+    group_a = data.get("group_a", [])
+    if group_a:
+        text += "🟢 <b>Ключевые локомотивы продаж (Группа A):</b>\n"
+        for i, item in enumerate(group_a[:8], 1):
+            text += (
+                f"{i}. <b>{html.escape(item['name'])}</b>\n"
+                f"   Выручка: <code>{item['total_revenue']:,.0f} {CURRENCY}</code> (доля: <b>{item.get('revenue_share', 0)}%</b>) | Остаток: <code>{item['stock_qty']} шт.</code>\n"
+            )
+        text += "\n"
+
+    group_c = data.get("group_c", [])
+    if group_c:
+        text += "⚪ <b>Кандидаты на акции / скидки (Группа C с остатком):</b>\n"
+        c_with_stock = [it for it in group_c if it["stock_qty"] > 0][:5]
+        if c_with_stock:
+            for it in c_with_stock:
+                text += f"• <b>{html.escape(it['name'])}</b> — на складе: <code>{it['stock_qty']} шт.</code> (продаж: {it['sold_qty']} шт.)\n"
+        else:
+            text += "<i>Нет зависших остатков в группе C.</i>\n"
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⏳ Прогноз закупок", callback_data="adm_procure_forecast")
+    builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
+    builder.button(text="📥 Скачать Аналитику (CSV)", callback_data="export_analytics_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(2, 1, 1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ПРОГНОЗ ЗАКУПОК ───────────────────
+
+@router.message(F.text == "⏳ Прогноз закупок")
+@router.callback_query(F.data == "adm_procure_forecast")
+async def show_procurement_forecast(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "warehouse_manager"):
+        msg = "❌ Нет прав для просмотра прогноза закупок."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    forecast = await db.get_procurement_forecast(days_window=30)
+    if not forecast:
+        text = "✅ <b>На складе нет дефицита!</b> Все позиции укомплектованы."
+    else:
+        empty_cnt = sum(1 for x in forecast if x["urgency"] == "CRITICAL_EMPTY")
+        high_cnt = sum(1 for x in forecast if x["urgency"] == "HIGH")
+        med_cnt = sum(1 for x in forecast if x["urgency"] == "MEDIUM")
+
+        text = (
+            "⏳ <b>ПРОГНОЗ ЗАКУПОК И ДЕФИЦИТА (SMART FORECAST)</b>\n"
+            "<i>Расчёт остатка дней при текущем темпе продаж за 30 дней</i>\n\n"
+            f"🚨 Закончились полностью (0 шт.): <b>{empty_cnt} поз.</b>\n"
+            f"⚠️ Закончатся менее чем за 7 дней: <b>{high_cnt} поз.</b>\n"
+            f"⏳ Хватит на 7-14 дней: <b>{med_cnt} поз.</b>\n\n"
+            "📋 <b>Список первоочередных дозакупок:</b>\n\n"
+        )
+
+        critical_items = [x for x in forecast if x["urgency"] in ("CRITICAL_EMPTY", "HIGH", "MEDIUM")][:10]
+        if not critical_items:
+            critical_items = forecast[:8]
+
+        for it in critical_items:
+            days_str = f"хватит на {it['days_left']} дн." if it["days_left"] < 900 else "нет продаж"
+            text += (
+                f"{it['urgency_label']} <b>{html.escape(it['name'])}</b>\n"
+                f"   📦 Остаток: <b>{it['stock_qty']} шт.</b> ({days_str})\n"
+                f"   📉 Расход: <code>{it['daily_burn']} шт./день</code> | Рекомендовано заказать: <b>+{it['recommended_order']} шт.</b>\n"
+                f"   🏭 Поставщик: <i>{html.escape(it['supplier'] or 'Не указан')}</i>\n\n"
+            )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🏆 ABC-анализ", callback_data="adm_abc_analysis")
+    builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
+    builder.button(text="📥 Скачать Аналитику (CSV)", callback_data="export_analytics_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(2, 1, 1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ТОП КЛИЕНТОВ ───────────────────
+
+@router.message(F.text == "👥 Топ клиентов")
+@router.callback_query(F.data == "adm_top_clients")
+async def show_top_clients(target: types.Message | types.CallbackQuery) -> None:
+    role = await db.get_user_role(target.from_user.id)
+    if role not in ("admin", "sales_manager"):
+        msg = "❌ Нет прав для просмотра базы клиентов."
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.answer(msg)
+        return
+
+    clients = await db.get_top_clients(limit=10)
+    if not clients:
+        text = "⚠️ <b>Пока нет заказов от клиентов.</b>"
+    else:
+        text = (
+            "👥 <b>РЕЙТИНГ КЛЮЧЕВЫХ КЛИЕНТОВ (LTV & ОБЪЁМ)</b>\n"
+            "<i>Топ-10 покупателей по сумме выкупа</i>\n\n"
+        )
+        for i, c in enumerate(clients, 1):
+            client_type = "ОПТ 📦" if c.get("client_type") == "wholesale" else "Розница 🛍️"
+            text += (
+                f"{i}. <b>{html.escape(c['full_name'])}</b> ({client_type})\n"
+                f"   💰 Сумма выкупа: <b>{c['total_spent']:,.0f} {CURRENCY}</b>\n"
+                f"   📦 Заказов: <code>{c['orders_count']} шт.</code> | Средний чек: <code>{c['avg_check']:,.0f} {CURRENCY}</code>\n"
+                f"   🕐 Последний заказ: <code>{c['last_order_date'][:16]}</code>\n\n"
+            )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📈 Продажи и KPI", callback_data="adm_sales_kpi")
+    builder.button(text="📥 Скачать Аналитику (CSV)", callback_data="export_analytics_csv")
+    builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
+    builder.adjust(2, 1)
+
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+

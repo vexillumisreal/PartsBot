@@ -8,3 +8,5 @@ spare_parts.db
 *.db-wal
 *.db-shm
 exports/*.csv
+exports/qr/
+*.backup

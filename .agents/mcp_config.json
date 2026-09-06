@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "google-workspace": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--python",
+        "3.12",
+        "--with",
+        "google-workspace-mcp",
+        "python",
+        ".agents/scripts/run_google_workspace_mcp.py"
+      ],
+      "env": {
+        "GOOGLE_WORKSPACE_CLIENT_ID": "",
+        "GOOGLE_WORKSPACE_CLIENT_SECRET": "",
+        "GOOGLE_WORKSPACE_REFRESH_TOKEN": "",
+        "GOOGLE_WORKSPACE_ENABLED_CAPABILITIES": "[\"drive\", \"sheets\", \"docs\", \"gmail\", \"calendar\"]"
+      }
+    }
+  }
+}

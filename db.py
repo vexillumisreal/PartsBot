@@ -105,15 +105,19 @@ async def init_db() -> None:
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS orders (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id      INTEGER NOT NULL,
-                user_name    TEXT    DEFAULT '',
-                contact      TEXT    DEFAULT '',
-                notes        TEXT    DEFAULT '',
-                total_amount REAL    DEFAULT 0,
-                status       TEXT    DEFAULT 'pending',
-                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id          INTEGER NOT NULL,
+                user_name        TEXT    DEFAULT '',
+                contact          TEXT    DEFAULT '',
+                notes            TEXT    DEFAULT '',
+                delivery_method  TEXT    DEFAULT 'pickup',
+                delivery_address TEXT    DEFAULT '',
+                payment_method   TEXT    DEFAULT 'cash',
+                payment_status   TEXT    DEFAULT 'unpaid',
+                total_amount     REAL    DEFAULT 0,
+                status           TEXT    DEFAULT 'pending',
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         """)
@@ -146,6 +150,10 @@ async def init_db() -> None:
             ("parts", "low_stock_threshold", "INTEGER DEFAULT 3"),
             ("stock_history", "user_id", "INTEGER"),
             ("stock_history", "type", "TEXT DEFAULT 'incoming'"),
+            ("orders", "delivery_method", "TEXT DEFAULT 'pickup'"),
+            ("orders", "delivery_address", "TEXT DEFAULT ''"),
+            ("orders", "payment_method", "TEXT DEFAULT 'cash'"),
+            ("orders", "payment_status", "TEXT DEFAULT 'unpaid'"),
         ]
         async with db.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
             existing_tables = {r[0] for r in await cur.fetchall()}
@@ -709,6 +717,10 @@ async def create_order(
     notes: str,
     items: list[dict],
     total_amount: float,
+    delivery_method: str = "pickup",
+    delivery_address: str = "",
+    payment_method: str = "cash",
+    payment_status: str = "unpaid",
 ) -> int:
     """
     items: [{'part_id': int, 'part_name': str, 'quantity': int, 'price': float}]
@@ -717,10 +729,18 @@ async def create_order(
         await db.execute("INSERT OR IGNORE INTO users (user_id, full_name) VALUES (?, ?)", (user_id, user_name))
         cur = await db.execute(
             """
-            INSERT INTO orders (user_id, user_name, contact, notes, total_amount, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
+            INSERT INTO orders (
+                user_id, user_name, contact, notes,
+                delivery_method, delivery_address, payment_method, payment_status,
+                total_amount, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """,
-            (user_id, user_name, contact, notes, total_amount),
+            (
+                user_id, user_name, contact, notes,
+                delivery_method, delivery_address, payment_method, payment_status,
+                total_amount,
+            ),
         )
         order_id = cur.lastrowid
         for item in items:
@@ -741,7 +761,8 @@ async def get_user_orders(user_id: int, limit: int = 10) -> list[dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
-            SELECT id, total_amount, status, created_at
+            SELECT id, total_amount, status, created_at,
+                   delivery_method, delivery_address, payment_method, payment_status
             FROM orders
             WHERE user_id = ?
             ORDER BY created_at DESC LIMIT ?
@@ -814,6 +835,17 @@ async def update_order_status(order_id: int, new_status: str, deduct_stock: bool
         cur = await db.execute(
             "UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (new_status, order_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def set_order_payment_status(order_id: int, payment_status: str) -> bool:
+    """Обновляет статус оплаты заказа (unpaid, paid, refunded)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cur = await db.execute(
+            "UPDATE orders SET payment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (payment_status, order_id),
         )
         await db.commit()
         return cur.rowcount > 0
@@ -1047,3 +1079,314 @@ async def export_movements_csv(filename: str = "stock_movements.csv", days: int 
                 r["quantity"], r["supplier"], r["notes"], r["user_id"]
             ])
     return filepath
+
+
+# ─────────────────────────── РАСШИРЕННАЯ АНАЛИТИКА ─────────────────────────
+
+async def get_sales_kpi() -> dict:
+    """
+    Возвращает финансовые и операционные KPI продаж:
+    - Выручка, количество заказов и средний чек: Сегодня, за 7 дней, за 30 дней, за всё время.
+    - Статусы заказов (pending, confirmed, completed, cancelled).
+    - Способы доставки и оплаты.
+    """
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            db.row_factory = aiosqlite.Row
+
+            async def _period_metrics(condition: str, params: tuple = ()) -> dict:
+                sql = f"""
+                    SELECT
+                        COUNT(*) AS orders_count,
+                        COALESCE(SUM(total_amount), 0) AS revenue,
+                        COALESCE(AVG(total_amount), 0) AS avg_check
+                    FROM orders
+                    WHERE status != 'cancelled' {condition}
+                """
+                async with db.execute(sql, params) as cur:
+                    row = await cur.fetchone()
+                    return dict(row) if row else {"orders_count": 0, "revenue": 0.0, "avg_check": 0.0}
+
+            today = await _period_metrics("AND date(created_at) = date('now')")
+            week = await _period_metrics("AND created_at >= datetime('now', '-7 days')")
+            month = await _period_metrics("AND created_at >= datetime('now', '-30 days')")
+            all_time = await _period_metrics("")
+
+            # Распределение по статусам
+            async with db.execute("SELECT status, COUNT(*) AS cnt FROM orders GROUP BY status") as cur:
+                status_rows = await cur.fetchall()
+                status_dist = {r["status"]: r["cnt"] for r in status_rows}
+
+            # Распределение по доставке
+            async with db.execute("SELECT delivery_method, COUNT(*) AS cnt FROM orders GROUP BY delivery_method") as cur:
+                del_rows = await cur.fetchall()
+                delivery_dist = {r["delivery_method"]: r["cnt"] for r in del_rows}
+
+            # Распределение по оплате
+            async with db.execute("SELECT payment_method, COUNT(*) AS cnt FROM orders GROUP BY payment_method") as cur:
+                pay_rows = await cur.fetchall()
+                payment_dist = {r["payment_method"]: r["cnt"] for r in pay_rows}
+
+            return {
+                "today": today,
+                "week": week,
+                "month": month,
+                "all_time": all_time,
+                "status_dist": status_dist,
+                "delivery_dist": delivery_dist,
+                "payment_dist": payment_dist,
+            }
+    except Exception:
+        logger.exception("get_sales_kpi failed")
+        return {}
+
+
+async def get_abc_analysis() -> dict:
+    """
+    Классификация ассортимента по методу ABC (Правило Парето):
+    A — до 80% накопленной выручки (ключевые ходовые позиции)
+    B — следующие 15% выручки (стабильные товары со средним спросом)
+    C — последние 5% выручки или товары без продаж (неликвид / редкий спрос)
+    """
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            db.row_factory = aiosqlite.Row
+
+            async with db.execute(
+                """
+                SELECT
+                    p.id,
+                    p.name,
+                    p.category,
+                    p.quantity AS stock_qty,
+                    p.retail_price,
+                    COALESCE(SUM(oi.quantity), 0) AS sold_qty,
+                    COALESCE(SUM(oi.quantity * oi.price), 0) AS total_revenue
+                FROM parts p
+                LEFT JOIN order_items oi ON p.id = oi.part_id
+                LEFT JOIN orders o ON oi.order_id = o.id AND o.status != 'cancelled'
+                WHERE p.is_active = 1
+                GROUP BY p.id
+                ORDER BY total_revenue DESC, sold_qty DESC
+                """
+            ) as cur:
+                items = [dict(r) for r in await cur.fetchall()]
+
+            total_revenue = sum(it["total_revenue"] for it in items)
+
+            group_a, group_b, group_c = [], [], []
+            cum_rev = 0.0
+
+            for it in items:
+                rev = it["total_revenue"]
+                if total_revenue > 0 and rev > 0:
+                    cum_rev += rev
+                    pct = (cum_rev / total_revenue) * 100.0
+                    it["revenue_share"] = round((rev / total_revenue) * 100.0, 2)
+                    it["cumulative_share"] = round(pct, 2)
+                    if pct <= 80.0:
+                        it["group"] = "A"
+                        group_a.append(it)
+                    elif pct <= 95.0:
+                        it["group"] = "B"
+                        group_b.append(it)
+                    else:
+                        it["group"] = "C"
+                        group_c.append(it)
+                else:
+                    it["revenue_share"] = 0.0
+                    it["cumulative_share"] = 100.0
+                    it["group"] = "C"
+                    group_c.append(it)
+
+            return {
+                "total_revenue": total_revenue,
+                "total_items": len(items),
+                "group_a": group_a,
+                "group_b": group_b,
+                "group_c": group_c,
+                "counts": {
+                    "A": len(group_a),
+                    "B": len(group_b),
+                    "C": len(group_c),
+                },
+                "revenue": {
+                    "A": sum(i["total_revenue"] for i in group_a),
+                    "B": sum(i["total_revenue"] for i in group_b),
+                    "C": sum(i["total_revenue"] for i in group_c),
+                },
+            }
+    except Exception:
+        logger.exception("get_abc_analysis failed")
+        return {}
+
+
+async def get_procurement_forecast(days_window: int = 30) -> list[dict]:
+    """
+    Прогноз потребности в закупках (Smart Procurement):
+    Рассчитывает скорость расхода (burn rate) за последние days_window дней,
+    остаток дней запаса и рекомендованный объем дозаказа (на 30 дней запаса).
+    """
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    p.id,
+                    p.name,
+                    p.category,
+                    p.quantity AS stock_qty,
+                    p.low_stock_threshold,
+                    p.cost_price,
+                    p.supplier,
+                    COALESCE(SUM(oi.quantity), 0) AS sold_period
+                FROM parts p
+                LEFT JOIN order_items oi ON p.id = oi.part_id
+                LEFT JOIN orders o ON oi.order_id = o.id
+                     AND o.status != 'cancelled'
+                     AND o.created_at >= datetime('now', '-' || ? || ' days')
+                WHERE p.is_active = 1
+                GROUP BY p.id
+                ORDER BY p.quantity ASC
+                """,
+                (days_window,),
+            ) as cur:
+                rows = await cur.fetchall()
+
+            forecast = []
+            for r in rows:
+                item = dict(r)
+                sold = item["sold_period"]
+                stock = item["stock_qty"]
+                daily_burn = sold / float(days_window)
+                item["daily_burn"] = round(daily_burn, 2)
+
+                if daily_burn > 0:
+                    days_left = round(stock / daily_burn, 1)
+                    item["days_left"] = days_left
+                    target_stock = int(daily_burn * 30)
+                    reorder_qty = max(0, target_stock - stock)
+                    item["recommended_order"] = max(
+                        reorder_qty,
+                        (item["low_stock_threshold"] * 2 - stock) if stock <= item["low_stock_threshold"] else 0
+                    )
+                else:
+                    item["days_left"] = 999.0 if stock > 0 else 0.0
+                    item["recommended_order"] = item["low_stock_threshold"] * 2 if stock == 0 else 0
+
+                if stock == 0:
+                    item["urgency"] = "CRITICAL_EMPTY"
+                    item["urgency_label"] = "🚨 Закончился"
+                elif item["days_left"] <= 7 or stock <= item["low_stock_threshold"]:
+                    item["urgency"] = "HIGH"
+                    item["urgency_label"] = "⚠️ < 7 дней"
+                elif item["days_left"] <= 14:
+                    item["urgency"] = "MEDIUM"
+                    item["urgency_label"] = "⏳ < 14 дней"
+                else:
+                    item["urgency"] = "OK"
+                    item["urgency_label"] = "✅ В норме"
+
+                forecast.append(item)
+
+            urgency_weights = {"CRITICAL_EMPTY": 0, "HIGH": 1, "MEDIUM": 2, "OK": 3}
+            forecast.sort(key=lambda x: (urgency_weights.get(x["urgency"], 4), x["days_left"]))
+            return forecast
+    except Exception:
+        logger.exception("get_procurement_forecast failed")
+        return []
+
+
+async def get_top_clients(limit: int = 10) -> list[dict]:
+    """
+    Рейтинг ключевых клиентов по обороту и количеству заказов.
+    """
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    u.user_id,
+                    COALESCE(u.full_name, o.user_name, 'Клиент #' || u.user_id) AS full_name,
+                    u.status AS client_type,
+                    COUNT(o.id) AS orders_count,
+                    COALESCE(SUM(o.total_amount), 0) AS total_spent,
+                    COALESCE(AVG(o.total_amount), 0) AS avg_check,
+                    MAX(o.created_at) AS last_order_date
+                FROM orders o
+                JOIN users u ON o.user_id = u.user_id
+                WHERE o.status != 'cancelled'
+                GROUP BY u.user_id
+                ORDER BY total_spent DESC LIMIT ?
+                """,
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+    except Exception:
+        logger.exception("get_top_clients failed")
+        return []
+
+
+async def export_analytics_csv(filename: str = "sales_analytics.csv") -> str:
+    """
+    Выгружает комплексную аналитику: KPI, ABC-анализ, прогноз закупок и топ клиентов в один CSV.
+    """
+    filepath = os.path.join(EXPORT_DIR, filename)
+    kpi = await get_sales_kpi()
+    abc = await get_abc_analysis()
+    forecast = await get_procurement_forecast()
+    top_clients = await get_top_clients(limit=30)
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f, delimiter=";")
+
+        # Блок 1: KPI
+        writer.writerow(["=== ФИНАНСОВЫЕ KPI И ДИНАМИКА ПРОДАЖ ==="])
+        writer.writerow(["Период", "Заказов (шт)", "Выручка (руб)", "Средний чек (руб)"])
+        for period_key, label in [("today", "Сегодня"), ("week", "За 7 дней"), ("month", "За 30 дней"), ("all_time", "За всё время")]:
+            p = kpi.get(period_key, {})
+            writer.writerow([
+                label,
+                p.get("orders_count", 0),
+                p.get("revenue", 0),
+                round(p.get("avg_check", 0), 2),
+            ])
+        writer.writerow([])
+
+        # Блок 2: Топ клиенты
+        writer.writerow(["=== ТОП ПОКУПАТЕЛЕЙ (LTV) ==="])
+        writer.writerow(["User ID", "Имя / Контакт", "Тип (розница/опт)", "Заказов", "Выручка (руб)", "Средний чек (руб)", "Последний заказ"])
+        for c in top_clients:
+            writer.writerow([
+                c["user_id"], c["full_name"], c["client_type"], c["orders_count"],
+                c["total_spent"], round(c["avg_check"], 2), c["last_order_date"]
+            ])
+        writer.writerow([])
+
+        # Блок 3: ABC-анализ
+        writer.writerow(["=== ABC-АНАЛИЗ АССОРТИМЕНТА (ПРАВИЛО ПАРЕТО) ==="])
+        writer.writerow(["ID", "Товар", "Категория", "Группа ABC", "Остаток (шт)", "Продано (шт)", "Выручка (руб)", "Доля в выручке (%)", "Накопленная доля (%)"])
+        all_abc = abc.get("group_a", []) + abc.get("group_b", []) + abc.get("group_c", [])
+        for item in all_abc:
+            writer.writerow([
+                item["id"], item["name"], item["category"], item.get("group", "C"),
+                item["stock_qty"], item["sold_qty"], item["total_revenue"],
+                item.get("revenue_share", 0), item.get("cumulative_share", 0)
+            ])
+        writer.writerow([])
+
+        # Блок 4: Прогноз закупок
+        writer.writerow(["=== ПРОГНОЗ ЗАКУПОК И ДЕФИЦИТА (30 ДНЕЙ) ==="])
+        writer.writerow(["ID", "Товар", "Категория", "Статус срочности", "Остаток (шт)", "Расход в день (шт)", "Хватит на (дней)", "Рекомендовано заказать (шт)", "Поставщик"])
+        for fcast in forecast:
+            writer.writerow([
+                fcast["id"], fcast["name"], fcast["category"], fcast.get("urgency_label", ""),
+                fcast["stock_qty"], fcast.get("daily_burn", 0), fcast.get("days_left", 0),
+                fcast.get("recommended_order", 0), fcast.get("supplier", "")
+            ])
+
+    return filepath
+
