@@ -148,8 +148,8 @@ async def setup_webapp() -> web.AppRunner:
     runner = web.AppRunner(app)
     await runner.setup()
 
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    site = web.TCPSite(runner, "0.0.0.0", 8888)
     await site.start()
-    logger.info("WebApp server started on http://0.0.0.0:8080")
+    logger.info("WebApp server started on http://0.0.0.0:8888")
 
     return runner
