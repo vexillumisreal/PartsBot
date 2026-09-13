@@ -48,18 +48,11 @@ QR_DIR: str = os.path.join(EXPORT_DIR, "qr")
 os.makedirs(QR_DIR, exist_ok=True)
 
 # ─────────────────── СКЛАД И ДОСТАВКА ───────────────────
-WAREHOUSE_ADDRESS: str = os.getenv(
-    "WAREHOUSE_ADDRESS",
-    "г. Казань, Проспект Победы 139к2"
-)
-WAREHOUSE_HOURS: str = os.getenv(
-    "WAREHOUSE_HOURS",
-    "Пн-Вс: 10:00 — 21:00"
-)
+WAREHOUSE_ADDRESS: str = os.getenv("WAREHOUSE_ADDRESS", "г. Казань, Проспект Победы 139к2")
+WAREHOUSE_HOURS: str = os.getenv("WAREHOUSE_HOURS", "Пн-Вс: 10:00 — 21:00")
 WAREHOUSE_PHONE: str = os.getenv("WAREHOUSE_PHONE", "+7 (927) 234-41-79")
 WAREHOUSE_GEO_LINK: str = os.getenv(
-    "WAREHOUSE_GEO_LINK",
-    "https://yandex.ru/maps/org/pedant_ru/85756074472/?ll=49.218151%2C55.776538&z=17"
+    "WAREHOUSE_GEO_LINK", "https://yandex.ru/maps/org/pedant_ru/85756074472/?ll=49.218151%2C55.776538&z=17"
 )
 
 # ─────────────────── РЕКВИЗИТЫ ОПЛАТЫ ───────────────────
@@ -74,4 +67,3 @@ PAYMENT_PROVIDER_TOKEN: str = os.getenv("PAYMENT_PROVIDER_TOKEN", "")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан! Проверьте файл .env")
-

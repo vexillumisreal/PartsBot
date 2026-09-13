@@ -3,6 +3,7 @@ db.py — асинхронный слой работы с базой данны�
 
 Все публичные функции — корутины (async def).
 """
+
 import os
 import csv
 import logging
@@ -27,11 +28,12 @@ LOW_STOCK_THRESHOLD = 3
 
 # ─────────────────────────── INIT ────────────────────────────
 
+
 async def init_db() -> None:
     """Создаёт все таблицы при первом запуске и накатывает миграции."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("PRAGMA foreign_keys = ON")
-        
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id               INTEGER PRIMARY KEY,
@@ -191,6 +193,7 @@ async def init_db() -> None:
 
 # ─────────────────────────── USERS ───────────────────────────
 
+
 def is_admin(user_id: int) -> bool:
     """Проверяет, является ли пользователь администратором по конфигу."""
     return user_id in ADMIN_IDS or (ADMIN_ID and user_id == ADMIN_ID)
@@ -324,9 +327,7 @@ async def get_user_info(user_id: int) -> dict | None:
 
 async def get_warehouse_managers() -> list[int]:
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT user_id FROM users WHERE role IN ('admin', 'warehouse_manager')"
-        ) as cur:
+        async with db.execute("SELECT user_id FROM users WHERE role IN ('admin', 'warehouse_manager')") as cur:
             rows = await cur.fetchall()
             res = [r[0] for r in rows]
             if ADMIN_ID and ADMIN_ID not in res:
@@ -336,9 +337,7 @@ async def get_warehouse_managers() -> list[int]:
 
 async def get_sales_managers() -> list[int]:
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT user_id FROM users WHERE role IN ('admin', 'sales_manager')"
-        ) as cur:
+        async with db.execute("SELECT user_id FROM users WHERE role IN ('admin', 'sales_manager')") as cur:
             rows = await cur.fetchall()
             res = [r[0] for r in rows]
             if ADMIN_ID and ADMIN_ID not in res:
@@ -366,6 +365,7 @@ async def user_exists(user_id: int) -> bool:
 
 # ─────────────────────────── WHOLESALE REQUESTS ───────────────────────────
 
+
 async def create_wholesale_request(user_id: int, user_name: str, comment: str = "") -> int:
     async with aiosqlite.connect(DB_NAME) as db:
         cur = await db.execute(
@@ -391,14 +391,12 @@ async def has_pending_wholesale_request(user_id: int) -> bool:
 async def get_pending_wholesale_requests() -> list[dict]:
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """
+        async with db.execute("""
             SELECT id, user_id, user_name, comment, created_at
             FROM wholesale_requests
             WHERE status = 'pending'
             ORDER BY created_at DESC
-            """
-        ) as cur:
+            """) as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
@@ -407,17 +405,13 @@ async def resolve_wholesale_request(request_id: int, approved: bool) -> tuple[bo
     """Возвращает (success, user_id)."""
     status = "approved" if approved else "rejected"
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT user_id FROM wholesale_requests WHERE id = ?", (request_id,)
-        ) as cur:
+        async with db.execute("SELECT user_id FROM wholesale_requests WHERE id = ?", (request_id,)) as cur:
             row = await cur.fetchone()
             if not row:
                 return False, 0
             user_id = row[0]
 
-        await db.execute(
-            "UPDATE wholesale_requests SET status = ? WHERE id = ?", (status, request_id)
-        )
+        await db.execute("UPDATE wholesale_requests SET status = ? WHERE id = ?", (status, request_id))
         if approved:
             await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
             await db.execute("UPDATE users SET status = 'wholesale' WHERE user_id = ?", (user_id,))
@@ -426,6 +420,7 @@ async def resolve_wholesale_request(request_id: int, approved: bool) -> tuple[bo
 
 
 # ─────────────────────────── PARTS ───────────────────────────
+
 
 async def add_part(
     category: str,
@@ -453,14 +448,12 @@ async def add_part(
 async def get_brands() -> list[tuple[str, int]]:
     """Возвращает список брендов (category) и количество активных запчастей."""
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            """
+        async with db.execute("""
             SELECT category, COUNT(*) FROM parts
             WHERE is_active = 1 AND category IS NOT NULL AND category != ''
             GROUP BY category
             ORDER BY COUNT(*) DESC, category ASC
-            """
-        ) as cur:
+            """) as cur:
             rows = await cur.fetchall()
             return [(r[0], r[1]) for r in rows]
 
@@ -611,23 +604,21 @@ async def search_parts(query: str, page: int = 0, page_size: int = 8) -> tuple[l
     words = query.strip().split()
     if not words:
         return [], 0
-        
+
     conditions = []
     params = []
     for word in words:
         conditions.append("(name LIKE ? OR category LIKE ? OR subcategory LIKE ?)")
         pattern = f"%{word}%"
         params.extend([pattern, pattern, pattern])
-        
+
     where_clause = " AND ".join(conditions)
     offset = page * page_size
-    
+
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            f"SELECT COUNT(*) FROM parts WHERE {where_clause} AND is_active=1", params
-        ) as cur:
+        async with db.execute(f"SELECT COUNT(*) FROM parts WHERE {where_clause} AND is_active=1", params) as cur:
             total = (await cur.fetchone())[0]
-            
+
         async with db.execute(
             f"""
             SELECT id, name, retail_price, wholesale_price, quantity, category, subcategory, part_type, cost_price
@@ -637,8 +628,8 @@ async def search_parts(query: str, page: int = 0, page_size: int = 8) -> tuple[l
             params + [page_size, offset],
         ) as cur:
             rows = await cur.fetchall()
-            
-        # Keep returning the original 6 columns for backwards compatibility, 
+
+        # Keep returning the original 6 columns for backwards compatibility,
         # but db search now actually returns more if needed elsewhere (like webapp).
         # We'll just return the full rows, the callers usually unpack what they need or slice.
         return list(rows), total
@@ -666,9 +657,7 @@ async def get_part(part_id: int) -> tuple | None:
 async def get_part_quantity(part_id: int) -> int:
     try:
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute(
-                "SELECT quantity FROM parts WHERE id = ?", (part_id,)
-            ) as cur:
+            async with db.execute("SELECT quantity FROM parts WHERE id = ?", (part_id,)) as cur:
                 row = await cur.fetchone()
                 return row[0] if row else 0
     except Exception:
@@ -678,9 +667,7 @@ async def get_part_quantity(part_id: int) -> int:
 
 async def deactivate_part(part_id: int) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
-        cur = await db.execute(
-            "UPDATE parts SET is_active = 0 WHERE id = ?", (part_id,)
-        )
+        cur = await db.execute("UPDATE parts SET is_active = 0 WHERE id = ?", (part_id,))
         await db.commit()
         return cur.rowcount > 0
 
@@ -707,8 +694,14 @@ async def update_part_prices(
 
 async def update_part_field(part_id: int, field: str, value) -> bool:
     allowed_fields = {
-        "name", "cost_price", "retail_price", "wholesale_price",
-        "quantity", "low_stock_threshold", "supplier", "subcategory"
+        "name",
+        "cost_price",
+        "retail_price",
+        "wholesale_price",
+        "quantity",
+        "low_stock_threshold",
+        "supplier",
+        "subcategory",
     }
     if field not in allowed_fields:
         return False
@@ -721,7 +714,9 @@ async def update_part_field(part_id: int, field: str, value) -> bool:
         return cur.rowcount > 0
 
 
-async def set_part_quantity(part_id: int, quantity: int, user_id: int | None = None, reason: str = "Ручная корректировка") -> bool:
+async def set_part_quantity(
+    part_id: int, quantity: int, user_id: int | None = None, reason: str = "Ручная корректировка"
+) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT quantity FROM parts WHERE id = ?", (part_id,)) as cur:
             row = await cur.fetchone()
@@ -747,6 +742,7 @@ async def set_part_quantity(part_id: int, quantity: int, user_id: int | None = N
 
 # ─────────────────────────── STOCK ───────────────────────────
 
+
 async def add_stock_movement(
     part_id: int,
     quantity: int,
@@ -759,9 +755,7 @@ async def add_stock_movement(
     try:
         async with aiosqlite.connect(DB_NAME) as db:
             if movement_type == "outgoing":
-                async with db.execute(
-                    "SELECT quantity FROM parts WHERE id = ?", (part_id,)
-                ) as cur:
+                async with db.execute("SELECT quantity FROM parts WHERE id = ?", (part_id,)) as cur:
                     row = await cur.fetchone()
                     if not row or row[0] < quantity:
                         return False
@@ -817,16 +811,14 @@ async def get_low_stock_alerts(unread_only: bool = True) -> list[dict]:
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         cond = "WHERE la.sent = 0" if unread_only else ""
-        async with db.execute(
-            f"""
+        async with db.execute(f"""
             SELECT la.id AS alert_id, la.part_id, p.name AS part_name,
                    p.category, p.quantity, p.low_stock_threshold, la.date, la.sent
             FROM low_stock_alerts la
             JOIN parts p ON la.part_id = p.id
             {cond}
             ORDER BY la.date DESC LIMIT 50
-            """
-        ) as cur:
+            """) as cur:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
@@ -850,6 +842,7 @@ async def clear_low_stock_alerts() -> None:
 
 
 # ─────────────────────────── ORDERS ───────────────────────────
+
 
 async def create_order(
     user_id: int,
@@ -878,8 +871,14 @@ async def create_order(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """,
             (
-                user_id, user_name, contact, notes,
-                delivery_method, delivery_address, payment_method, payment_status,
+                user_id,
+                user_name,
+                contact,
+                notes,
+                delivery_method,
+                delivery_address,
+                payment_method,
+                payment_status,
                 total_amount,
             ),
         )
@@ -993,10 +992,14 @@ async def get_order_details(order_id: int) -> dict | None:
         return order
 
 
-async def update_order_status(order_id: int, new_status: str, deduct_stock: bool = False, staff_id: int | None = None) -> bool:
+async def update_order_status(
+    order_id: int, new_status: str, deduct_stock: bool = False, staff_id: int | None = None
+) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
         if deduct_stock:
-            async with db.execute("SELECT part_id, quantity, part_name FROM order_items WHERE order_id = ?", (order_id,)) as cur:
+            async with db.execute(
+                "SELECT part_id, quantity, part_name FROM order_items WHERE order_id = ?", (order_id,)
+            ) as cur:
                 items = await cur.fetchall()
             for part_id, qty, pname in items:
                 await db.execute(
@@ -1032,12 +1035,12 @@ async def set_order_payment_status(order_id: int, payment_status: str) -> bool:
 
 # ─────────────────────────── REPORTS & STATS ─────────────────────────
 
+
 async def get_financial_summary() -> dict:
     try:
         async with aiosqlite.connect(DB_NAME) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                """
+            async with db.execute("""
                 SELECT
                     COALESCE(SUM(retail_price * quantity), 0)                         AS total_revenue,
                     COALESCE(SUM(cost_price   * quantity), 0)                         AS total_cost,
@@ -1048,8 +1051,7 @@ async def get_financial_summary() -> dict:
                              ELSE 0 END
                     ), 0) AS avg_margin
                 FROM parts WHERE is_active = 1
-                """
-            ) as cur:
+                """) as cur:
                 row = await cur.fetchone()
                 return dict(row) if row else {}
     except Exception:
@@ -1080,8 +1082,7 @@ async def get_category_profitability(category: str | None = None) -> list[dict]:
                 ) as cur:
                     rows = await cur.fetchall()
             else:
-                async with db.execute(
-                    """
+                async with db.execute("""
                     SELECT name AS part_name, category,
                            (retail_price - cost_price) * quantity AS total_profit,
                            ROUND(CASE WHEN retail_price > 0
@@ -1089,8 +1090,7 @@ async def get_category_profitability(category: str | None = None) -> list[dict]:
                                  ELSE 0 END, 1) AS margin_percent
                     FROM parts WHERE is_active = 1
                     ORDER BY margin_percent DESC LIMIT 10
-                    """
-                ) as cur:
+                    """) as cur:
                     rows = await cur.fetchall()
             return [dict(r) for r in rows]
     except Exception:
@@ -1130,8 +1130,7 @@ async def get_supplier_analysis() -> list[dict]:
     try:
         async with aiosqlite.connect(DB_NAME) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                """
+            async with db.execute("""
                 SELECT
                     supplier,
                     COUNT(*)               AS delivery_count,
@@ -1142,8 +1141,7 @@ async def get_supplier_analysis() -> list[dict]:
                 WHERE type = 'incoming' AND supplier IS NOT NULL AND supplier != ''
                 GROUP BY supplier
                 ORDER BY total_received DESC
-                """
-            ) as cur:
+                """) as cur:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
     except Exception:
@@ -1155,17 +1153,15 @@ async def get_stats_summary() -> dict:
     """Полная сводка для главного экрана админ-панели."""
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
-        
+
         # Кол-во активных товаров и суммарный остаток
-        async with db.execute(
-            """
+        async with db.execute("""
             SELECT COUNT(*) AS total_parts,
                    COALESCE(SUM(quantity), 0) AS total_stock,
                    COALESCE(SUM(retail_price * quantity), 0) AS total_retail_value,
                    COALESCE(SUM(cost_price * quantity), 0) AS total_cost_value
             FROM parts WHERE is_active = 1
-            """
-        ) as cur:
+            """) as cur:
             p_stats = dict(await cur.fetchone())
 
         # Товары с низким остатком
@@ -1197,34 +1193,53 @@ async def get_stats_summary() -> dict:
 
 # ─────────────────────────── CSV EXPORT ─────────────────────────
 
+
 async def export_stock_csv(filename: str = "warehouse_stock.csv") -> str:
     filepath = os.path.join(EXPORT_DIR, filename)
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """
+        async with db.execute("""
             SELECT id, category, subcategory, name, supplier,
                    cost_price, retail_price, wholesale_price, quantity,
                    low_stock_threshold, last_updated
             FROM parts WHERE is_active = 1
             ORDER BY category, name
-            """
-        ) as cur:
+            """) as cur:
             rows = await cur.fetchall()
 
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f, delimiter=";")
-        writer.writerow([
-            "ID", "Категория", "Подкатегория", "Название", "Поставщик",
-            "Себестоимость (руб)", "Розница (руб)", "Опт (руб)", "Остаток (шт)",
-            "Порог алерта", "Обновлено"
-        ])
+        writer.writerow(
+            [
+                "ID",
+                "Категория",
+                "Подкатегория",
+                "Название",
+                "Поставщик",
+                "Себестоимость (руб)",
+                "Розница (руб)",
+                "Опт (руб)",
+                "Остаток (шт)",
+                "Порог алерта",
+                "Обновлено",
+            ]
+        )
         for r in rows:
-            writer.writerow([
-                r["id"], r["category"], r["subcategory"], r["name"], r["supplier"],
-                r["cost_price"], r["retail_price"], r["wholesale_price"], r["quantity"],
-                r["low_stock_threshold"], r["last_updated"]
-            ])
+            writer.writerow(
+                [
+                    r["id"],
+                    r["category"],
+                    r["subcategory"],
+                    r["name"],
+                    r["supplier"],
+                    r["cost_price"],
+                    r["retail_price"],
+                    r["wholesale_price"],
+                    r["quantity"],
+                    r["low_stock_threshold"],
+                    r["last_updated"],
+                ]
+            )
     return filepath
 
 
@@ -1247,20 +1262,29 @@ async def export_movements_csv(filename: str = "stock_movements.csv", days: int 
 
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f, delimiter=";")
-        writer.writerow([
-            "ID операции", "Дата", "Тип", "Товар", "Категория",
-            "Кол-во (шт)", "Поставщик", "Примечания", "User ID"
-        ])
+        writer.writerow(
+            ["ID операции", "Дата", "Тип", "Товар", "Категория", "Кол-во (шт)", "Поставщик", "Примечания", "User ID"]
+        )
         for r in rows:
             mtype = "Приход" if r["type"] == "incoming" else "Расход/Списание"
-            writer.writerow([
-                r["id"], r["date"], mtype, r["part_name"], r["category"],
-                r["quantity"], r["supplier"], r["notes"], r["user_id"]
-            ])
+            writer.writerow(
+                [
+                    r["id"],
+                    r["date"],
+                    mtype,
+                    r["part_name"],
+                    r["category"],
+                    r["quantity"],
+                    r["supplier"],
+                    r["notes"],
+                    r["user_id"],
+                ]
+            )
     return filepath
 
 
 # ─────────────────────────── РАСШИРЕННАЯ АНАЛИТИКА ─────────────────────────
+
 
 async def get_sales_kpi() -> dict:
     """
@@ -1297,7 +1321,9 @@ async def get_sales_kpi() -> dict:
                 status_dist = {r["status"]: r["cnt"] for r in status_rows}
 
             # Распределение по доставке
-            async with db.execute("SELECT delivery_method, COUNT(*) AS cnt FROM orders GROUP BY delivery_method") as cur:
+            async with db.execute(
+                "SELECT delivery_method, COUNT(*) AS cnt FROM orders GROUP BY delivery_method"
+            ) as cur:
                 del_rows = await cur.fetchall()
                 delivery_dist = {r["delivery_method"]: r["cnt"] for r in del_rows}
 
@@ -1331,8 +1357,7 @@ async def get_abc_analysis() -> dict:
         async with aiosqlite.connect(DB_NAME) as db:
             db.row_factory = aiosqlite.Row
 
-            async with db.execute(
-                """
+            async with db.execute("""
                 SELECT
                     p.id,
                     p.name,
@@ -1347,8 +1372,7 @@ async def get_abc_analysis() -> dict:
                 WHERE p.is_active = 1
                 GROUP BY p.id
                 ORDER BY total_revenue DESC, sold_qty DESC
-                """
-            ) as cur:
+                """) as cur:
                 items = [dict(r) for r in await cur.fetchall()]
 
             total_revenue = sum(it["total_revenue"] for it in items)
@@ -1448,7 +1472,7 @@ async def get_procurement_forecast(days_window: int = 30) -> list[dict]:
                     reorder_qty = max(0, target_stock - stock)
                     item["recommended_order"] = max(
                         reorder_qty,
-                        (item["low_stock_threshold"] * 2 - stock) if stock <= item["low_stock_threshold"] else 0
+                        (item["low_stock_threshold"] * 2 - stock) if stock <= item["low_stock_threshold"] else 0,
                     )
                 else:
                     item["days_left"] = 999.0 if stock > 0 else 0.0
@@ -1525,47 +1549,110 @@ async def export_analytics_csv(filename: str = "sales_analytics.csv") -> str:
         # Блок 1: KPI
         writer.writerow(["=== ФИНАНСОВЫЕ KPI И ДИНАМИКА ПРОДАЖ ==="])
         writer.writerow(["Период", "Заказов (шт)", "Выручка (руб)", "Средний чек (руб)"])
-        for period_key, label in [("today", "Сегодня"), ("week", "За 7 дней"), ("month", "За 30 дней"), ("all_time", "За всё время")]:
+        for period_key, label in [
+            ("today", "Сегодня"),
+            ("week", "За 7 дней"),
+            ("month", "За 30 дней"),
+            ("all_time", "За всё время"),
+        ]:
             p = kpi.get(period_key, {})
-            writer.writerow([
-                label,
-                p.get("orders_count", 0),
-                p.get("revenue", 0),
-                round(p.get("avg_check", 0), 2),
-            ])
+            writer.writerow(
+                [
+                    label,
+                    p.get("orders_count", 0),
+                    p.get("revenue", 0),
+                    round(p.get("avg_check", 0), 2),
+                ]
+            )
         writer.writerow([])
 
         # Блок 2: Топ клиенты
         writer.writerow(["=== ТОП ПОКУПАТЕЛЕЙ (LTV) ==="])
-        writer.writerow(["User ID", "Имя / Контакт", "Тип (розница/опт)", "Заказов", "Выручка (руб)", "Средний чек (руб)", "Последний заказ"])
+        writer.writerow(
+            [
+                "User ID",
+                "Имя / Контакт",
+                "Тип (розница/опт)",
+                "Заказов",
+                "Выручка (руб)",
+                "Средний чек (руб)",
+                "Последний заказ",
+            ]
+        )
         for c in top_clients:
-            writer.writerow([
-                c["user_id"], c["full_name"], c["client_type"], c["orders_count"],
-                c["total_spent"], round(c["avg_check"], 2), c["last_order_date"]
-            ])
+            writer.writerow(
+                [
+                    c["user_id"],
+                    c["full_name"],
+                    c["client_type"],
+                    c["orders_count"],
+                    c["total_spent"],
+                    round(c["avg_check"], 2),
+                    c["last_order_date"],
+                ]
+            )
         writer.writerow([])
 
         # Блок 3: ABC-анализ
         writer.writerow(["=== ABC-АНАЛИЗ АССОРТИМЕНТА (ПРАВИЛО ПАРЕТО) ==="])
-        writer.writerow(["ID", "Товар", "Категория", "Группа ABC", "Остаток (шт)", "Продано (шт)", "Выручка (руб)", "Доля в выручке (%)", "Накопленная доля (%)"])
+        writer.writerow(
+            [
+                "ID",
+                "Товар",
+                "Категория",
+                "Группа ABC",
+                "Остаток (шт)",
+                "Продано (шт)",
+                "Выручка (руб)",
+                "Доля в выручке (%)",
+                "Накопленная доля (%)",
+            ]
+        )
         all_abc = abc.get("group_a", []) + abc.get("group_b", []) + abc.get("group_c", [])
         for item in all_abc:
-            writer.writerow([
-                item["id"], item["name"], item["category"], item.get("group", "C"),
-                item["stock_qty"], item["sold_qty"], item["total_revenue"],
-                item.get("revenue_share", 0), item.get("cumulative_share", 0)
-            ])
+            writer.writerow(
+                [
+                    item["id"],
+                    item["name"],
+                    item["category"],
+                    item.get("group", "C"),
+                    item["stock_qty"],
+                    item["sold_qty"],
+                    item["total_revenue"],
+                    item.get("revenue_share", 0),
+                    item.get("cumulative_share", 0),
+                ]
+            )
         writer.writerow([])
 
         # Блок 4: Прогноз закупок
         writer.writerow(["=== ПРОГНОЗ ЗАКУПОК И ДЕФИЦИТА (30 ДНЕЙ) ==="])
-        writer.writerow(["ID", "Товар", "Категория", "Статус срочности", "Остаток (шт)", "Расход в день (шт)", "Хватит на (дней)", "Рекомендовано заказать (шт)", "Поставщик"])
+        writer.writerow(
+            [
+                "ID",
+                "Товар",
+                "Категория",
+                "Статус срочности",
+                "Остаток (шт)",
+                "Расход в день (шт)",
+                "Хватит на (дней)",
+                "Рекомендовано заказать (шт)",
+                "Поставщик",
+            ]
+        )
         for fcast in forecast:
-            writer.writerow([
-                fcast["id"], fcast["name"], fcast["category"], fcast.get("urgency_label", ""),
-                fcast["stock_qty"], fcast.get("daily_burn", 0), fcast.get("days_left", 0),
-                fcast.get("recommended_order", 0), fcast.get("supplier", "")
-            ])
+            writer.writerow(
+                [
+                    fcast["id"],
+                    fcast["name"],
+                    fcast["category"],
+                    fcast.get("urgency_label", ""),
+                    fcast["stock_qty"],
+                    fcast.get("daily_burn", 0),
+                    fcast.get("days_left", 0),
+                    fcast.get("recommended_order", 0),
+                    fcast.get("supplier", ""),
+                ]
+            )
 
     return filepath
-

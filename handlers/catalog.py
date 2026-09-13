@@ -1,9 +1,13 @@
 """handlers/catalog.py — каталог, поиск с полной пагинацией, карточки запчастей и интеграция с корзиной."""
+
 import html
 import zlib
 
+
 def get_model_hash(model_name: str) -> str:
     return hex(zlib.crc32(model_name.encode("utf-8")))[2:]
+
+
 import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -11,7 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import db
-from config import CATEGORIES, PAGE_SIZE, CURRENCY
+from config import PAGE_SIZE, CURRENCY
 from handlers.orders import add_to_cart
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,7 @@ class SearchState(StatesGroup):
 
 
 # ─────────────────── helpers ───────────────────
+
 
 def _parts_text_html(
     parts: list[tuple],
@@ -55,7 +60,7 @@ def _pagination_builder(
     back_cb: str,
 ) -> InlineKeyboardBuilder:
     builder = InlineKeyboardBuilder()
-    total_pages = max(1, -(-total // page_size))
+    # total_pages = max(1, -(-total // page_size))  # unused
 
     nav_buttons = []
     if page > 0:
@@ -109,6 +114,7 @@ CODE_TO_TYPE: dict[str, str] = {v: k for k, v in TYPE_CODES.items()}
 
 # ─────────────────── ГЛАВНОЕ МЕНЮ КАТАЛОГА (УРОВЕНЬ 1: БРЕНДЫ) ───────────────────
 
+
 async def _send_category_menu(target: types.Message | types.CallbackQuery) -> None:
     builder = InlineKeyboardBuilder()
     brands = await db.get_brands()
@@ -138,6 +144,7 @@ async def back_to_catalog(callback: types.CallbackQuery) -> None:
 
 
 # ─────────────────── УРОВЕНЬ 2: МОДЕЛИ ВЫБРАННОГО БРЕНДА ───────────────────
+
 
 @router.callback_query(F.data.startswith("cbr_"))
 async def show_brand_models(callback: types.CallbackQuery) -> None:
@@ -194,6 +201,7 @@ async def show_brand_models(callback: types.CallbackQuery) -> None:
 
 # ─────────────────── УРОВЕНЬ 3: КАТЕГОРИИ ЗАПЧАСТЕЙ МОДЕЛИ ───────────────────
 
+
 @router.callback_query(F.data.startswith("cmd_"))
 async def show_model_part_types(callback: types.CallbackQuery) -> None:
     parts_tok = callback.data[4:].split("_")
@@ -220,8 +228,7 @@ async def show_model_part_types(callback: types.CallbackQuery) -> None:
     builder.adjust(1)
 
     await callback.message.edit_text(
-        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n"
-        f"Выберите категорию запчасти:",
+        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n" f"Выберите категорию запчасти:",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -229,6 +236,7 @@ async def show_model_part_types(callback: types.CallbackQuery) -> None:
 
 
 # ─────────────────── УРОВЕНЬ 4: СПИСОК ЗАПЧАСТЕЙ ───────────────────
+
 
 @router.callback_query(F.data.startswith("ctp_"))
 async def show_parts_by_type(callback: types.CallbackQuery) -> None:
@@ -296,7 +304,7 @@ async def _show_parts_list(
         title += " <i>(Оптовые цены)</i>"
 
     cb_prefix = f"ctp_{b_code}_{m_hash}_{t_code}"
-    back_cb = f"cmd_{b_code}_{model_idx}" if model else "back_catalog"
+    back_cb = f"cmd_{b_code}_{m_hash}" if model else "back_catalog"
 
     total_pages = max(1, -(-total // PAGE_SIZE))
     text = f"{title}\n<i>Страница {page + 1} из {total_pages} (всего {total} поз.)</i>\n\n"
@@ -330,6 +338,7 @@ async def _show_parts_list(
 
 # ─────────────────── СОВМЕСТИМОСТЬ СО СТАРЫМИ CALLBACKS ───────────────────
 
+
 @router.callback_query(F.data.startswith("cat_"))
 async def show_category_fallback(callback: types.CallbackQuery) -> None:
     cat = callback.data[4:]
@@ -342,6 +351,7 @@ async def show_category_fallback(callback: types.CallbackQuery) -> None:
 
 
 # ─────────────────── КАРТОЧКА ЗАПЧАСТИ ───────────────────
+
 
 @router.callback_query(F.data.startswith("part_detail_"))
 async def show_part_detail(callback: types.CallbackQuery) -> None:
@@ -365,9 +375,7 @@ async def show_part_detail(callback: types.CallbackQuery) -> None:
         f"📁 Категория: <b>{html.escape(category)}</b>"
         + (f" → <i>{html.escape(subcategory)}</i>" if subcategory else "")
         + "\n"
-        f"💰 Цена: <b>{price:,.0f} {CURRENCY}</b> "
-        + ("<i>(Опт)</i>" if is_wholesale else "<i>(Розница)</i>")
-        + "\n"
+        f"💰 Цена: <b>{price:,.0f} {CURRENCY}</b> " + ("<i>(Опт)</i>" if is_wholesale else "<i>(Розница)</i>") + "\n"
         f"📦 Статус: {stock_badge}\n"
     )
 
@@ -429,6 +437,7 @@ async def notify_stock_cb(callback: types.CallbackQuery) -> None:
 
 
 # ─────────────────── ПОИСК С ПАГИНАЦИЕЙ ───────────────────
+
 
 @router.message(F.text == "🔍 Поиск")
 @router.callback_query(F.data == "catalog_start_search")

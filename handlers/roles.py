@@ -1,13 +1,14 @@
 """handlers/roles.py — интерактивное управление пользователями, ролями и заявками на опт."""
+
 import html
 import logging
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from config import PAGE_SIZE
 
 import db
-from handlers.common import get_admin_menu
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -32,11 +33,12 @@ ROLE_BUTTONS = {
 
 # ─────────────────── СПИСОК ПОЛЬЗОВАТЕЛЕЙ И ПАГИНАЦИЯ ───────────────────
 
+
 async def render_users_list(target: types.Message | types.CallbackQuery, page: int = 0, search: str = "") -> None:
     users, total = await db.get_users_paged(page=page, page_size=8, search=search)
     total_pages = max(1, -(-total // 8))
 
-    text = f"👥 <b>Управление пользователями</b>\n"
+    text = "👥 <b>Управление пользователями</b>\n"
     if search:
         text += f"<i>Поиск по запросу: «{html.escape(search)}»</i>\n"
     text += f"<i>Страница {page + 1} из {total_pages} (всего пользователей: {total})</i>\n\n"
@@ -55,7 +57,7 @@ async def render_users_list(target: types.Message | types.CallbackQuery, page: i
 
     # Пагинация
     nav_buttons = []
-    prefix = f"users_p_{page}"
+    # prefix = f"users_p_{page}"  # unused
     if page > 0:
         nav_buttons.append((f"◀ Пред. ({page})", f"users_page_{page - 1}"))
     if (page + 1) * 8 < total:
@@ -105,6 +107,7 @@ async def users_page_cb(callback: types.CallbackQuery) -> None:
 
 # ─────────────────── КАРТОЧКА ПОЛЬЗОВАТЕЛЯ ───────────────────
 
+
 @router.callback_query(F.data.startswith("user_view_"))
 async def view_user_card(callback: types.CallbackQuery) -> None:
     user_id = int(callback.data[10:])
@@ -148,8 +151,7 @@ async def toggle_status_cb(callback: types.CallbackQuery, bot: Bot) -> None:
     try:
         await bot.send_message(
             user_id,
-            f"🔔 <b>Ваш ценовой статус изменён администратором:</b>\n"
-            f"Новый статус: <b>{status_label}</b>",
+            f"🔔 <b>Ваш ценовой статус изменён администратором:</b>\n" f"Новый статус: <b>{status_label}</b>",
             parse_mode="HTML",
         )
     except Exception:
@@ -215,6 +217,7 @@ async def set_role_cb(callback: types.CallbackQuery, state: FSMContext, bot: Bot
 
 # ─────────────────── ВВОД ID ВРУЧНУЮ ───────────────────
 
+
 @router.callback_query(F.data == "role_manual_id")
 @router.callback_query(F.data == "user_search_start")
 async def manual_id_prompt(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -279,6 +282,7 @@ async def input_role_user_id(message: types.Message, state: FSMContext) -> None:
 
 # ─────────────────── МОДЕРАЦИЯ ЗАЯВОК НА ОПТ ───────────────────
 
+
 @router.message(F.text == "💼 Заявки на опт")
 @router.callback_query(F.data == "admin_wholesale_reqs")
 async def show_wholesale_requests(target: types.Message | types.CallbackQuery) -> None:
@@ -332,7 +336,7 @@ async def resolve_wholesale_req_cb(callback: types.CallbackQuery, bot: Bot) -> N
     # ws_req_{id}_{approve/reject}
     req_id = int(parts[2])
     action = parts[3]
-    approved = (action == "approve")
+    approved = action == "approve"
 
     ok, user_id = await db.resolve_wholesale_request(req_id, approved)
 

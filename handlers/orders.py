@@ -1,4 +1,5 @@
 """handlers/orders.py — Корзина, оформление заказов и управление заказами для менеджеров."""
+
 import os
 import html
 import logging
@@ -90,6 +91,7 @@ class CheckoutState(StatesGroup):
 
 # ─────────────────── РЕНДЕР КОРЗИНЫ ───────────────────
 
+
 def build_cart_message(user_id: int) -> tuple[str, InlineKeyboardBuilder]:
     cart = get_cart(user_id)
     builder = InlineKeyboardBuilder()
@@ -114,7 +116,7 @@ def build_cart_message(user_id: int) -> tuple[str, InlineKeyboardBuilder]:
         builder.button(text="➕", callback_data=f"cart_inc_{part_id}")
         builder.button(text="🗑️", callback_data=f"cart_del_{part_id}")
 
-    text += f"━━━━━━━━━━━━━━━━━━\n"
+    text += "━━━━━━━━━━━━━━━━━━\n"
     text += f"💰 Итого к оплате: <b>{total_amount:,.0f} {CURRENCY}</b> ({total_count} шт.)\n"
 
     # Корзина: ряд по 4 кнопки на товар
@@ -200,6 +202,7 @@ async def cart_clear_cb(callback: types.CallbackQuery) -> None:
 
 # ─────────────────── ОФОРМЛЕНИЕ ЗАКАЗА ───────────────────
 
+
 @router.callback_query(F.data == "cart_checkout")
 async def start_checkout(callback: types.CallbackQuery, state: FSMContext) -> None:
     cart = get_cart(callback.from_user.id)
@@ -243,8 +246,7 @@ async def checkout_contact_step(message: types.Message, state: FSMContext) -> No
     builder.adjust(1)
 
     await message.answer(
-        "🚚 <b>Шаг 2 из 4: Способ получения заказа</b>\n\n"
-        "Выберите удобный для вас вариант доставки или самовывоза:",
+        "🚚 <b>Шаг 2 из 4: Способ получения заказа</b>\n\n" "Выберите удобный для вас вариант доставки или самовывоза:",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -310,7 +312,9 @@ def generate_sbp_qr(order_id: int, total_amount: float) -> str | None:
             if any(k in bank.lower() for k in ("тинькофф", "т-банк", "t-bank", "tinkoff")):
                 payload = f"https://www.tbank.ru/rm/{clean_phone}/"
             else:
-                payload = f"СБП|Тел:{phone}|Банк:{bank}|Получатель:{receiver}|Заказ:#{order_id}|Сумма:{total_amount:.0f}RUB"
+                payload = (
+                    f"СБП|Тел:{phone}|Банк:{bank}|Получатель:{receiver}|Заказ:#{order_id}|Сумма:{total_amount:.0f}RUB"
+                )
 
         qr_path = os.path.join(QR_DIR, f"sbp_order_{order_id}.png")
         qr = qrcode.QRCode(
@@ -339,10 +343,7 @@ async def render_payment_step(target: types.Message, state: FSMContext, is_edit:
     builder.button(text="❌ Отмена", callback_data="cancel_checkout")
     builder.adjust(1)
 
-    text = (
-        "💳 <b>Шаг 3 из 4: Способ оплаты</b>\n\n"
-        "Выберите предпочтительный вариант оплаты:"
-    )
+    text = "💳 <b>Шаг 3 из 4: Способ оплаты</b>\n\n" "Выберите предпочтительный вариант оплаты:"
     if is_edit:
         await target.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     else:
@@ -432,7 +433,7 @@ async def finalize_order(message: types.Message, user: types.User, state: FSMCon
                 f"📍 <b>Адрес склада:</b> <code>{html.escape(WAREHOUSE_ADDRESS)}</code>\n"
                 f"🕐 <b>Режим работы:</b> <i>{html.escape(WAREHOUSE_HOURS)}</i>\n"
                 f"📞 <b>Дежурный кладовщик:</b> <code>{html.escape(WAREHOUSE_PHONE)}</code>\n"
-                f"🗺️ <a href=\"{html.escape(WAREHOUSE_GEO_LINK)}\">Открыть схему проезда на карте</a>\n"
+                f'🗺️ <a href="{html.escape(WAREHOUSE_GEO_LINK)}">Открыть схему проезда на карте</a>\n'
             )
         else:
             delivery_info = (
@@ -519,9 +520,7 @@ async def finalize_order(message: types.Message, user: types.User, state: FSMCon
 
         for staff_id in staff_list:
             try:
-                await bot.send_message(
-                    staff_id, staff_text, reply_markup=builder.as_markup(), parse_mode="HTML"
-                )
+                await bot.send_message(staff_id, staff_text, reply_markup=builder.as_markup(), parse_mode="HTML")
             except Exception:
                 logger.warning("Не удалось отправить уведомление о заказе сотруднику %s", staff_id)
 
@@ -558,7 +557,7 @@ async def update_order_status_cb(callback: types.CallbackQuery, bot: Bot) -> Non
         return
 
     # При подтверждении можно списать товар со склада
-    deduct = (new_status == "confirmed" and order["status"] == "pending")
+    deduct = new_status == "confirmed" and order["status"] == "pending"
     ok = await db.update_order_status(
         order_id=order_id,
         new_status=new_status,
@@ -575,8 +574,7 @@ async def update_order_status_cb(callback: types.CallbackQuery, bot: Bot) -> Non
         try:
             await bot.send_message(
                 client_id,
-                f"🔔 <b>Статус вашего заказа #{order_id} изменён:</b>\n"
-                f"Текущий статус: <b>{status_label}</b>",
+                f"🔔 <b>Статус вашего заказа #{order_id} изменён:</b>\n" f"Текущий статус: <b>{status_label}</b>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -642,7 +640,9 @@ async def update_order_payment_cb(callback: types.CallbackQuery, bot: Bot) -> No
             f"<i>💳 Оплата отмечена: {pay_label} (сотрудник: {html.escape(callback.from_user.full_name)})</i>"
         )
         try:
-            await callback.message.edit_text(updated_text, reply_markup=callback.message.reply_markup, parse_mode="HTML")
+            await callback.message.edit_text(
+                updated_text, reply_markup=callback.message.reply_markup, parse_mode="HTML"
+            )
         except Exception:
             pass
     else:
@@ -650,6 +650,7 @@ async def update_order_payment_cb(callback: types.CallbackQuery, bot: Bot) -> No
 
 
 # ─────────────────── ИСТОРИЯ ЗАКАЗОВ КЛИЕНТА ───────────────────
+
 
 @router.message(Command("orders"))
 @router.callback_query(F.data == "my_orders")
@@ -685,4 +686,3 @@ async def show_my_orders(target: types.Message | types.CallbackQuery) -> None:
         await target.answer()
     else:
         await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-

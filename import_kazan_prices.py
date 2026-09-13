@@ -142,9 +142,18 @@ def extract_hierarchy(name: str, raw_model: str, raw_quality: str) -> tuple[str,
         if raw_model:
             # Убираем служебный мусор цветов и меток
             clean = raw_model
-            clean = re.sub(r"^(Аккумулятор для |Дисплей для |Шлейф для |Задняя крышка для )", "", clean, flags=re.IGNORECASE)
-            clean = re.sub(r"\s*-\s*(OR|Ориг|Премиум|Copy|AAA|High Copy|HQ|JK|GX|ZY).*$", "", clean, flags=re.IGNORECASE)
-            clean = re.sub(r"\s*\((Black|White|Blue|Gold|Green|Purple|Red|Черный|Белый|Синий|Золотой|Фиолетовый|Зеленый|Красный|Grey|Gray|Silver|Yellow|Pink|Orange|orig|copy|sota|wide connector|2 flex)[^\)]*\)", "", clean, flags=re.IGNORECASE)
+            clean = re.sub(
+                r"^(Аккумулятор для |Дисплей для |Шлейф для |Задняя крышка для )", "", clean, flags=re.IGNORECASE
+            )
+            clean = re.sub(
+                r"\s*-\s*(OR|Ориг|Премиум|Copy|AAA|High Copy|HQ|JK|GX|ZY).*$", "", clean, flags=re.IGNORECASE
+            )
+            clean = re.sub(
+                r"\s*\((Black|White|Blue|Gold|Green|Purple|Red|Черный|Белый|Синий|Золотой|Фиолетовый|Зеленый|Красный|Grey|Gray|Silver|Yellow|Pink|Orange|orig|copy|sota|wide connector|2 flex)[^\)]*\)",
+                "",
+                clean,
+                flags=re.IGNORECASE,
+            )
             clean = re.sub(r"!+.*?!+", "", clean).strip()
             # Ограничиваем длину названия модели для красивого отображения на кнопках
             if len(clean) > 36:
@@ -218,19 +227,21 @@ def parse_kazan_excel(file_path: str) -> list[dict]:
 
             brand, model, part_type = extract_hierarchy(name, model_raw, quality)
 
-            items.append({
-                "name": name,
-                "category": brand,          # Уровень 1: Бренд
-                "subcategory": model,        # Уровень 2: Модель
-                "part_type": part_type,      # Уровень 3: Категория детали
-                "retail_price": retail_price,
-                "wholesale_price": wholesale_price,
-                "cost_price": cost_price,
-                "supplier": "Казань",
-                "quantity": 0,
-                "low_stock_threshold": 3,
-                "is_active": 1,
-            })
+            items.append(
+                {
+                    "name": name,
+                    "category": brand,  # Уровень 1: Бренд
+                    "subcategory": model,  # Уровень 2: Модель
+                    "part_type": part_type,  # Уровень 3: Категория детали
+                    "retail_price": retail_price,
+                    "wholesale_price": wholesale_price,
+                    "cost_price": cost_price,
+                    "supplier": "Казань",
+                    "quantity": 0,
+                    "low_stock_threshold": 3,
+                    "is_active": 1,
+                }
+            )
 
     return items
 

@@ -4,6 +4,7 @@ bot.py — точка входа PartsBot.
 Запуск:
     python bot.py
 """
+
 import asyncio
 import logging
 
@@ -13,7 +14,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import db
-from config import BOT_TOKEN, ADMIN_ID, ADMIN_IDS
+from config import BOT_TOKEN, ADMIN_IDS
 from handlers import common, catalog, stock, admin, roles, orders
 from webapp import setup_webapp
 
@@ -27,10 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────── Bot & Dispatcher ─────────────────────────
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
 # Подключаем роутеры (важен порядок: команды/каталог/заказы/склад/админка)
@@ -44,6 +42,8 @@ dp.include_router(roles.router)
 
 # ─────────────────── Startup / Shutdown ───────────────────────
 web_runner = None
+
+
 async def on_startup() -> None:
     await db.init_db()
     for a_id in ADMIN_IDS:

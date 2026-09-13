@@ -1,4 +1,5 @@
 """handlers/common.py — /start, /help, /profile, /cancel, навигация и запросы на опт."""
+
 import html
 import logging
 from aiogram import Router, types, F, Bot
@@ -9,7 +10,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.types import KeyboardButton, WebAppInfo
 
 import db
-from config import CATEGORIES, WEBAPP_URL
+from config import WEBAPP_URL
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -21,10 +22,10 @@ class WholesaleRequestState(StatesGroup):
 
 def get_main_menu(role: str) -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    
+
     # Кнопка для WebApp
     builder.row(KeyboardButton(text="📱 Открыть Mini App", web_app=WebAppInfo(url=WEBAPP_URL)))
-    
+
     builder.button(text="📦 Каталог запчастей")
     builder.button(text="🔍 Поиск")
     builder.button(text="🛒 Корзина")
@@ -70,6 +71,7 @@ def get_admin_menu(role: str) -> types.ReplyKeyboardMarkup:
 
 # ─────────────────── СТАРТ И ОБЩИЕ КОМАНДЫ ───────────────────
 
+
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
     await state.clear()
@@ -102,7 +104,9 @@ async def cmd_cancel(message: types.Message, state: FSMContext) -> None:
         return
     await state.clear()
     role = await db.get_user_role(message.from_user.id)
-    await message.answer("❌ <b>Действие отменено.</b> Возврат в главное меню.", reply_markup=get_main_menu(role), parse_mode="HTML")
+    await message.answer(
+        "❌ <b>Действие отменено.</b> Возврат в главное меню.", reply_markup=get_main_menu(role), parse_mode="HTML"
+    )
 
 
 @router.message(Command("help"))
@@ -152,6 +156,7 @@ async def noop_callback(callback: types.CallbackQuery) -> None:
 
 # ─────────────────── ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ───────────────────
 
+
 @router.message(F.text == "👤 Профиль")
 @router.message(Command("profile"))
 async def cmd_profile(message: types.Message) -> None:
@@ -186,6 +191,7 @@ async def cmd_profile(message: types.Message) -> None:
 
 
 # ─────────────────── ЗАПРОС ОПТОВЫХ ЦЕН ───────────────────
+
 
 @router.callback_query(F.data == "req_wholesale")
 async def request_wholesale_cb(callback: types.CallbackQuery, state: FSMContext) -> None:
@@ -235,7 +241,9 @@ async def ws_input_comment(message: types.Message, state: FSMContext, bot: Bot) 
     await submit_wholesale_request(message, message.from_user, comment, state, bot)
 
 
-async def submit_wholesale_request(message: types.Message, user: types.User, comment: str, state: FSMContext, bot: Bot) -> None:
+async def submit_wholesale_request(
+    message: types.Message, user: types.User, comment: str, state: FSMContext, bot: Bot
+) -> None:
     user_name = user.full_name or user.username or f"User_{user.id}"
     req_id = await db.create_wholesale_request(user.id, user_name, comment)
     await state.clear()

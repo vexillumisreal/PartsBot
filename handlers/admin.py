@@ -1,4 +1,5 @@
 """handlers/admin.py — Dashboard администратора, редактирование товаров, аналитика, CSV-экспорт и рассылки."""
+
 import html
 import logging
 import asyncio
@@ -10,7 +11,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import db
 from config import CATEGORIES, CURRENCY
-from handlers.common import get_admin_menu
+
+# from handlers.common import get_admin_menu
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -38,6 +40,7 @@ def _cancel_builder(cb_data: str) -> InlineKeyboardBuilder:
 
 # ─────────────────── СОСТОЯНИЯ FSM ───────────────────
 
+
 class PartState(StatesGroup):
     category = State()
     subcategory = State()
@@ -61,11 +64,12 @@ class BroadcastState(StatesGroup):
 
 # ─────────────────── ИНТЕРАКТИВНЫЙ DASHBOARD ───────────────────
 
+
 async def render_admin_dashboard(target: types.Message | types.CallbackQuery) -> None:
     role = await db.get_user_role(target.from_user.id)
     stats = await db.get_stats_summary()
-    margin_diff = stats['total_retail_value'] - stats['total_cost_value']
-    margin_pct = (margin_diff / stats['total_retail_value'] * 100) if stats['total_retail_value'] > 0 else 0
+    margin_diff = stats["total_retail_value"] - stats["total_cost_value"]
+    margin_pct = (margin_diff / stats["total_retail_value"] * 100) if stats["total_retail_value"] > 0 else 0
 
     text = (
         f"⚙️ <b>ПАНЕЛЬ УПРАВЛЕНИЯ PARTSBOT</b>\n"
@@ -114,7 +118,6 @@ async def render_admin_dashboard(target: types.Message | types.CallbackQuery) ->
 
     builder.adjust(2)
 
-
     if isinstance(target, types.CallbackQuery):
         await target.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     else:
@@ -136,6 +139,7 @@ async def dashboard_handler(target: types.Message | types.CallbackQuery) -> None
 
 
 # ─────────────────── FSM: ДОБАВЛЕНИЕ ЗАПЧАСТИ ───────────────────
+
 
 @router.message(F.text == "➕ Добавить запчасть")
 @router.callback_query(F.data == "adm_add_part_start")
@@ -206,12 +210,16 @@ async def select_add_subcategory(callback: types.CallbackQuery, state: FSMContex
         )
     elif callback.data == "add_sub_skip":
         await state.update_data(subcategory="")
-        await callback.message.edit_text("➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML")
+        await callback.message.edit_text(
+            "➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML"
+        )
         await state.set_state(PartState.name)
     else:
         subcategory = callback.data[8:]
         await state.update_data(subcategory=subcategory)
-        await callback.message.edit_text("➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML")
+        await callback.message.edit_text(
+            "➕ Введите <b>название</b> запчасти:", reply_markup=builder.as_markup(), parse_mode="HTML"
+        )
         await state.set_state(PartState.name)
     await callback.answer()
 
@@ -230,7 +238,9 @@ async def input_part_name(message: types.Message, state: FSMContext) -> None:
     name = message.text.strip()
     await state.update_data(name=name)
     builder = _cancel_builder("part_add_cancel")
-    await message.answer("💰 Введите <b>себестоимость</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await message.answer(
+        "💰 Введите <b>себестоимость</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
     await state.set_state(PartState.cost_price)
 
 
@@ -247,7 +257,9 @@ async def input_cost_price(message: types.Message, state: FSMContext) -> None:
 
     await state.update_data(cost_price=cost_price)
     builder = _cancel_builder("part_add_cancel")
-    await message.answer("💰 Введите <b>розничную цену</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await message.answer(
+        "💰 Введите <b>розничную цену</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
     await state.set_state(PartState.retail_price)
 
 
@@ -264,7 +276,9 @@ async def input_retail_price(message: types.Message, state: FSMContext) -> None:
 
     await state.update_data(retail_price=retail_price)
     builder = _cancel_builder("part_add_cancel")
-    await message.answer("💰 Введите <b>оптовую цену</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML")
+    await message.answer(
+        "💰 Введите <b>оптовую цену</b> (в рублях):", reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
     await state.set_state(PartState.wholesale_price)
 
 
@@ -326,8 +340,9 @@ async def save_new_part(target: types.Message, state: FSMContext, threshold: int
             wholesale_price=data["wholesale_price"],
             low_stock_threshold=threshold,
         )
-        margin = ((data["retail_price"] - data["cost_price"]) / data["retail_price"] * 100
-                  if data["retail_price"] > 0 else 0)
+        margin = (
+            (data["retail_price"] - data["cost_price"]) / data["retail_price"] * 100 if data["retail_price"] > 0 else 0
+        )
 
         builder = InlineKeyboardBuilder()
         builder.button(text="📥 Оприходовать количество", callback_data="start_sin")
@@ -343,8 +358,7 @@ async def save_new_part(target: types.Message, state: FSMContext, threshold: int
             f"🛍️ Розница: <code>{data['retail_price']:,.0f} {CURRENCY}</code>\n"
             f"📦 Опт: <code>{data['wholesale_price']:,.0f} {CURRENCY}</code>\n"
             f"📈 Расчётная маржа: <b>{margin:.1f}%</b>\n"
-            f"🔔 Порог алерта: <code>{threshold} шт.</code>"
-            + warnings
+            f"🔔 Порог алерта: <code>{threshold} шт.</code>" + warnings
         )
         await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except Exception:
@@ -355,6 +369,7 @@ async def save_new_part(target: types.Message, state: FSMContext, threshold: int
 
 
 # ─────────────────── РЕДАКТИРОВАНИЕ ТОВАРОВ ───────────────────
+
 
 @router.message(F.text == "📦 Управление товарами")
 @router.callback_query(F.data == "adm_find_part_start")
@@ -399,7 +414,11 @@ async def process_find_part(message: types.Message, state: FSMContext) -> None:
         builder.button(text="🔍 Попробовать снова", callback_data="adm_find_part_start")
         builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
         builder.adjust(1)
-        await message.answer(f"❌ Запчасти по запросу «{html.escape(query)}» не найдены.", reply_markup=builder.as_markup(), parse_mode="HTML")
+        await message.answer(
+            f"❌ Запчасти по запросу «{html.escape(query)}» не найдены.",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
+        )
         return
 
     builder = InlineKeyboardBuilder()
@@ -535,6 +554,7 @@ async def adm_del_part_cb(callback: types.CallbackQuery) -> None:
 
 # ─────────────────── ОПОВЕЩЕНИЯ СКЛАДА ───────────────────
 
+
 @router.message(F.text == "🔔 Оповещения склада")
 @router.callback_query(F.data == "adm_view_alerts")
 async def show_low_stock_alerts(target: types.Message | types.CallbackQuery) -> None:
@@ -593,6 +613,7 @@ async def clear_alerts_cb(callback: types.CallbackQuery) -> None:
 
 # ─────────────────── ДВИЖЕНИЕ ТОВАРА И ОТЧЕТЫ ───────────────────
 
+
 @router.message(F.text == "📈 Движение товара")
 @router.callback_query(F.data == "adm_stock_movements")
 async def show_stock_movement(target: types.Message | types.CallbackQuery) -> None:
@@ -625,9 +646,9 @@ async def show_stock_movement(target: types.Message | types.CallbackQuery) -> No
 
     chunks = list(_split_and_send(text))
     for i, chunk in enumerate(chunks):
-        is_last = (i == len(chunks) - 1)
+        is_last = i == len(chunks) - 1
         markup = builder.as_markup() if is_last else None
-        
+
         if isinstance(target, types.CallbackQuery):
             if i == 0:
                 await target.message.edit_text(chunk, reply_markup=markup, parse_mode="HTML")
@@ -635,12 +656,13 @@ async def show_stock_movement(target: types.Message | types.CallbackQuery) -> No
                 await target.message.answer(chunk, reply_markup=markup, parse_mode="HTML")
         else:
             await target.answer(chunk, reply_markup=markup, parse_mode="HTML")
-            
+
     if isinstance(target, types.CallbackQuery):
         await target.answer()
 
 
 # ─────────────────── ФИНАНСОВЫЙ АНАЛИЗ ───────────────────
+
 
 @router.message(F.text == "💰 Финансовый анализ")
 @router.callback_query(F.data == "adm_fin_analysis")
@@ -685,6 +707,7 @@ async def show_financial_analysis(target: types.Message | types.CallbackQuery) -
 
 # ─────────────────── АНАЛИЗ ПОСТАВЩИКОВ ───────────────────
 
+
 @router.message(F.text == "🏢 Анализ поставщиков")
 @router.callback_query(F.data == "adm_suppliers")
 async def show_supplier_analysis(target: types.Message | types.CallbackQuery) -> None:
@@ -722,6 +745,7 @@ async def show_supplier_analysis(target: types.Message | types.CallbackQuery) ->
 
 
 # ─────────────────── ЭКСПОРТ В CSV ───────────────────
+
 
 @router.message(F.text == "📥 Экспорт в CSV")
 @router.callback_query(F.data == "adm_export_menu")
@@ -786,6 +810,7 @@ async def export_movements_csv_cb(callback: types.CallbackQuery) -> None:
 
 
 # ─────────────────── РАССЫЛКА СООБЩЕНИЙ ───────────────────
+
 
 @router.message(F.text == "📢 Рассылка")
 @router.callback_query(F.data == "adm_broadcast_start")
@@ -873,6 +898,7 @@ async def execute_broadcast(callback: types.CallbackQuery, state: FSMContext, bo
 
 # ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: KPI И ПРОДАЖИ ───────────────────
 
+
 @router.message(F.text == "📈 Продажи и KPI")
 @router.callback_query(F.data == "adm_sales_kpi")
 async def show_sales_kpi(target: types.Message | types.CallbackQuery) -> None:
@@ -939,6 +965,7 @@ async def show_sales_kpi(target: types.Message | types.CallbackQuery) -> None:
 
 # ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ABC-АНАЛИЗ ───────────────────
 
+
 @router.message(F.text == "🏆 ABC-анализ")
 @router.callback_query(F.data == "adm_abc_analysis")
 async def show_abc_analysis(target: types.Message | types.CallbackQuery) -> None:
@@ -956,9 +983,9 @@ async def show_abc_analysis(target: types.Message | types.CallbackQuery) -> None
     counts = data.get("counts", {})
     revs = data.get("revenue", {})
 
-    pct_a = (revs.get('A', 0) / tot_rev * 100) if tot_rev > 0 else 0
-    pct_b = (revs.get('B', 0) / tot_rev * 100) if tot_rev > 0 else 0
-    pct_c = (revs.get('C', 0) / tot_rev * 100) if tot_rev > 0 else 0
+    pct_a = (revs.get("A", 0) / tot_rev * 100) if tot_rev > 0 else 0
+    pct_b = (revs.get("B", 0) / tot_rev * 100) if tot_rev > 0 else 0
+    pct_c = (revs.get("C", 0) / tot_rev * 100) if tot_rev > 0 else 0
 
     text = (
         "🏆 <b>ABC-АНАЛИЗ АССОРТИМЕНТА (МАТРИЦА ПРИБЫЛИ)</b>\n"
@@ -1005,6 +1032,7 @@ async def show_abc_analysis(target: types.Message | types.CallbackQuery) -> None
 
 # ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ПРОГНОЗ ЗАКУПОК ───────────────────
 
+
 @router.message(F.text == "⏳ Прогноз закупок")
 @router.callback_query(F.data == "adm_procure_forecast")
 async def show_procurement_forecast(target: types.Message | types.CallbackQuery) -> None:
@@ -1043,7 +1071,11 @@ async def show_procurement_forecast(target: types.Message | types.CallbackQuery)
                 critical_items = forecast[:6]
 
             for it in critical_items:
-                days_str = f"хватит на {it['days_left']} дн." if (it["days_left"] > 0 and it["days_left"] < 900) else ("закончился" if it["stock_qty"] == 0 else "нет продаж")
+                days_str = (
+                    f"хватит на {it['days_left']} дн."
+                    if (it["days_left"] > 0 and it["days_left"] < 900)
+                    else ("закончился" if it["stock_qty"] == 0 else "нет продаж")
+                )
                 text += (
                     f"{it['urgency_label']} <b>{html.escape(it['name'][:34])}</b>\n"
                     f"   📦 Остаток: <b>{it['stock_qty']} шт.</b> ({days_str})\n"
@@ -1131,7 +1163,9 @@ async def adm_orders_list_handler(target: types.Message | types.CallbackQuery) -
         for o in orders:
             o_id = o["id"]
             st = o.get("status", "pending")
-            st_icon = {"pending": "⏳", "processing": "📦", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}.get(st, "📋")
+            st_icon = {"pending": "⏳", "processing": "📦", "shipped": "🚚", "completed": "✅", "cancelled": "❌"}.get(
+                st, "📋"
+            )
             time_str = o.get("created_at", "")[:16]
             c_name = o.get("user_name") or f"Клиент #{o['user_id']}"
             amt = o.get("total_amount", 0)
@@ -1147,11 +1181,15 @@ async def adm_orders_list_handler(target: types.Message | types.CallbackQuery) -
 
     nav = []
     if page > 0:
-        nav.append(types.InlineKeyboardButton(text="◀ Пред.", callback_data=f"adm_ord_list_{status_filter}_p{page - 1}"))
+        nav.append(
+            types.InlineKeyboardButton(text="◀ Пред.", callback_data=f"adm_ord_list_{status_filter}_p{page - 1}")
+        )
     if total_pages > 1:
         nav.append(types.InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
     if (page + 1) * page_size < total:
-        nav.append(types.InlineKeyboardButton(text="След. ▶", callback_data=f"adm_ord_list_{status_filter}_p{page + 1}"))
+        nav.append(
+            types.InlineKeyboardButton(text="След. ▶", callback_data=f"adm_ord_list_{status_filter}_p{page + 1}")
+        )
     if nav:
         builder.row(*nav)
 
@@ -1190,10 +1228,16 @@ async def _render_order_view(target: types.CallbackQuery | types.Message, order_
         pname = html.escape(it.get("part_name", ""))
         iqty = it.get("quantity", 0)
         iprice = it.get("price", 0)
-        items_text += f"{idx}. <b>{pname}</b>\n   <code>{iqty} шт. × {iprice:,.0f} = {iqty * iprice:,.0f} {CURRENCY}</code>\n"
+        items_text += (
+            f"{idx}. <b>{pname}</b>\n   <code>{iqty} шт. × {iprice:,.0f} = {iqty * iprice:,.0f} {CURRENCY}</code>\n"
+        )
 
-    deliv_method = {"pickup": "Самовывоз со склада", "courier": "Доставка курьером", "cdek": "СДЭК"}.get(order.get("delivery_method"), order.get("delivery_method"))
-    pay_method = {"cash": "При получении", "sbp": "СБП (перевод/QR)", "invoice": "По счёту (юрлицо)"}.get(order.get("payment_method"), order.get("payment_method"))
+    deliv_method = {"pickup": "Самовывоз со склада", "courier": "Доставка курьером", "cdek": "СДЭК"}.get(
+        order.get("delivery_method"), order.get("delivery_method")
+    )
+    pay_method = {"cash": "При получении", "sbp": "СБП (перевод/QR)", "invoice": "По счёту (юрлицо)"}.get(
+        order.get("payment_method"), order.get("payment_method")
+    )
 
     text = (
         f"{st_icon} <b>КАРТОЧКА ЗАКАЗА #{order_id}</b>\n\n"
@@ -1259,7 +1303,7 @@ async def adm_order_set_status_handler(callback: types.CallbackQuery, bot: Bot) 
             pass
         return
 
-    deduct = (new_status == "completed" and order.get("status") != "completed")
+    deduct = new_status == "completed" and order.get("status") != "completed"
     ok = await db.update_order_status(order_id, new_status, deduct_stock=deduct, staff_id=callback.from_user.id)
     if ok:
         try:
@@ -1270,8 +1314,7 @@ async def adm_order_set_status_handler(callback: types.CallbackQuery, bot: Bot) 
         try:
             await bot.send_message(
                 order["user_id"],
-                f"🔔 <b>Статус вашего заказа #{order_id} обновлен!</b>\n\n"
-                f"Новый статус: <b>{st_name}</b>",
+                f"🔔 <b>Статус вашего заказа #{order_id} обновлен!</b>\n\n" f"Новый статус: <b>{st_name}</b>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -1312,11 +1355,13 @@ async def start_sin_callback_handler(callback: types.CallbackQuery, state: FSMCo
     """Обработчик кнопки 'Оприходовать' из оповещения о низком остатке."""
     await callback.answer()
     from handlers.stock import _send_category_selector, StockInState
+
     await _send_category_selector(callback, "sin_cat", "📥 <b>Выберите категорию для приходования:</b>", "sin_cancel")
     await state.set_state(StockInState.category)
 
 
 # ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ТОП КЛИЕНТОВ ───────────────────
+
 
 @router.message(F.text == "👥 Топ клиентов")
 @router.callback_query(F.data == "adm_top_clients")
@@ -1334,10 +1379,7 @@ async def show_top_clients(target: types.Message | types.CallbackQuery) -> None:
     if not clients:
         text = "⚠️ <b>Пока нет заказов от клиентов.</b>"
     else:
-        text = (
-            "👥 <b>РЕЙТИНГ КЛЮЧЕВЫХ КЛИЕНТОВ (LTV & ОБЪЁМ)</b>\n"
-            "<i>Топ-10 покупателей по сумме выкупа</i>\n\n"
-        )
+        text = "👥 <b>РЕЙТИНГ КЛЮЧЕВЫХ КЛИЕНТОВ (LTV & ОБЪЁМ)</b>\n" "<i>Топ-10 покупателей по сумме выкупа</i>\n\n"
         for i, c in enumerate(clients, 1):
             client_type = "ОПТ 📦" if c.get("client_type") == "wholesale" else "Розница 🛍️"
             text += (
@@ -1358,4 +1400,3 @@ async def show_top_clients(target: types.Message | types.CallbackQuery) -> None:
         await target.answer()
     else:
         await target.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-

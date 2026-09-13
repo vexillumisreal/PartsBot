@@ -1,4 +1,5 @@
 """handlers/stock.py — приходование и списание товара (FSM) с защитой ввода и отменой."""
+
 import html
 import logging
 from aiogram import Router, types, F, Bot
@@ -7,8 +8,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import db
-from config import CATEGORIES
-from handlers.common import get_main_menu
+
+# from config import CATEGORIES
+# from handlers.common import get_main_menu
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -17,6 +19,7 @@ LOW_STOCK_THRESHOLD = db.LOW_STOCK_THRESHOLD
 
 
 # ─────────────────────── FSM States ───────────────────────────
+
 
 class StockInState(StatesGroup):
     search = State()
@@ -43,6 +46,7 @@ class StockOutState(StatesGroup):
 
 # ─────────────────────── helpers ───────────────────────────────
 
+
 def format_part_button_text(name: str, qty: int) -> str:
     """Очищает шаблонные префиксы в названии, чтобы на кнопке была видна суть (модель и тип)."""
     clean = name
@@ -58,7 +62,7 @@ def format_part_button_text(name: str, qty: int) -> str:
         "Камера для ",
     ):
         if clean.startswith(prefix):
-            clean = clean[len(prefix):]
+            clean = clean[len(prefix) :]
             break
     if len(clean) > 34:
         clean = clean[:31] + "..."
@@ -120,6 +124,7 @@ async def _notify_low_stock(bot: Bot, part_name: str, qty: int) -> None:
 # ═══════════════════════════════════════════════════════════
 #                    ПРИХОДОВАНИЕ
 # ═══════════════════════════════════════════════════════════
+
 
 @router.message(F.text == "📥 Приходование")
 async def start_stock_in(message: types.Message, state: FSMContext) -> None:
@@ -197,8 +202,7 @@ async def sin_search_query_msg(message: types.Message, state: FSMContext) -> Non
     builder.adjust(1)
 
     await message.answer(
-        f"🔍 Найдено совпадений: <b>{total}</b> (показано {len(parts)}):\n"
-        f"Выберите запчасть для оприходования:",
+        f"🔍 Найдено совпадений: <b>{total}</b> (показано {len(parts)}):\n" f"Выберите запчасть для оприходования:",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -285,8 +289,7 @@ async def sin_select_model(callback: types.CallbackQuery, state: FSMContext) -> 
     builder.adjust(1)
 
     await callback.message.edit_text(
-        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n"
-        f"Выберите категорию запчасти:",
+        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n" f"Выберите категорию запчасти:",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -309,7 +312,9 @@ async def sin_select_part_type(callback: types.CallbackQuery, state: FSMContext)
 async def sin_paginate_parts(callback: types.CallbackQuery, state: FSMContext) -> None:
     page = int(callback.data[7:])
     data = await state.get_data()
-    await _show_sin_parts(callback, state, data.get("brand", ""), data.get("model", ""), data.get("part_type"), page=page)
+    await _show_sin_parts(
+        callback, state, data.get("brand", ""), data.get("model", ""), data.get("part_type"), page=page
+    )
     await callback.answer()
 
 
@@ -329,8 +334,7 @@ async def sin_back_to_model(callback: types.CallbackQuery, state: FSMContext) ->
     builder.adjust(1)
 
     await callback.message.edit_text(
-        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n"
-        f"Выберите категорию запчасти:",
+        f"📱 <b>{html.escape(brand)} → {html.escape(model)}</b>\n" f"Выберите категорию запчасти:",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -517,7 +521,8 @@ async def _show_sin_confirm(target: types.Message, state: FSMContext) -> None:
     total_cost = cost_price * qty
     cost_line = (
         f"💰 Закупочная цена: <b>{cost_price:,.0f} ₽/шт.</b> (сумма: <b>{total_cost:,.0f} ₽</b>)\n"
-        if cost_price > 0 else "💰 Закупочная цена: <i>Не указана (0 ₽)</i>\n"
+        if cost_price > 0
+        else "💰 Закупочная цена: <i>Не указана (0 ₽)</i>\n"
     )
 
     text = (
@@ -574,6 +579,7 @@ async def sin_confirm_cb(callback: types.CallbackQuery, state: FSMContext, bot: 
 # ═══════════════════════════════════════════════════════════
 #                       СПИСАНИЕ
 # ═══════════════════════════════════════════════════════════
+
 
 @router.message(F.text == "📤 Списание")
 async def start_stock_out(message: types.Message, state: FSMContext) -> None:
@@ -651,8 +657,7 @@ async def sout_search_query_msg(message: types.Message, state: FSMContext) -> No
     builder.adjust(1)
 
     await message.answer(
-        f"🔍 Найдено в наличии: <b>{len(in_stock)}</b>:\n"
-        f"Выберите запчасть для списания:",
+        f"🔍 Найдено в наличии: <b>{len(in_stock)}</b>:\n" f"Выберите запчасть для списания:",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
