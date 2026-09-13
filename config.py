@@ -9,6 +9,7 @@ ADMIN_IDS: list[int] = [int(x.strip()) for x in ADMIN_IDS_RAW.replace(";", ",").
 if 6139301544 not in ADMIN_IDS:
     ADMIN_IDS.append(6139301544)
 ADMIN_ID: int = ADMIN_IDS[0] if ADMIN_IDS else 0
+WEBAPP_URL: str = os.getenv("WEBAPP_URL", "https://example.com/")
 
 # Основные бренды каталога (Уровень 1)
 BRANDS: dict[str, str] = {

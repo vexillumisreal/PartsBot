@@ -15,6 +15,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import db
 from config import BOT_TOKEN, ADMIN_ID, ADMIN_IDS
 from handlers import common, catalog, stock, admin, roles, orders
+from webapp import setup_webapp
 
 # ─────────────────── Logging ───────────────────────────────────
 logging.basicConfig(
@@ -42,6 +43,7 @@ dp.include_router(roles.router)
 
 
 # ─────────────────── Startup / Shutdown ───────────────────────
+web_runner = None
 async def on_startup() -> None:
     await db.init_db()
     for a_id in ADMIN_IDS:
@@ -50,12 +52,17 @@ async def on_startup() -> None:
         await db.set_user_status(a_id, "wholesale")
         logger.info("Суперадминистратор ID=%s активирован.", a_id)
 
+    global web_runner
+    web_runner = await setup_webapp()
+
     me = await bot.get_me()
     logger.info("Бот успешно запущен: @%s (id=%s)", me.username, me.id)
 
 
 async def on_shutdown() -> None:
     logger.info("Бот остановлен.")
+    if web_runner:
+        await web_runner.cleanup()
     await bot.session.close()
 
 

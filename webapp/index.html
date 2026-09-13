@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PartsBot Web App</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <h1 id="header-title">Каталог</h1>
+            <div class="header-actions">
+                <button id="btn-cart" class="icon-btn" style="display: none;">
+                    🛒 <span id="cart-badge" class="badge">0</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Search Bar -->
+        <div class="search-container" id="search-container">
+            <input type="text" id="search-input" placeholder="Поиск запчастей...">
+        </div>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Catalog View -->
+            <div id="view-catalog" class="view active">
+                <div id="catalog-list" class="catalog-grid"></div>
+                <div id="loading" class="loading">Загрузка...</div>
+            </div>
+
+            <!-- Cart View -->
+            <div id="view-cart" class="view">
+                <h2>Корзина</h2>
+                <div id="cart-items" class="cart-list"></div>
+                
+                <div class="checkout-form">
+                    <h3>Оформление заказа</h3>
+                    
+                    <label>Способ получения</label>
+                    <select id="delivery_method">
+                        <option value="pickup">Самовывоз (Казань)</option>
+                        <option value="cdek">СДЭК</option>
+                        <option value="courier">Курьер (по городу)</option>
+                    </select>
+
+                    <div id="delivery_address_wrapper" style="display:none;">
+                        <label>Адрес доставки</label>
+                        <input type="text" id="delivery_address" placeholder="Город, улица, дом...">
+                    </div>
+
+                    <label>Контактный телефон</label>
+                    <input type="tel" id="contact" placeholder="+7 (999) 000-00-00">
+
+                    <label>Способ оплаты</label>
+                    <select id="payment_method">
+                        <option value="cash">При получении</option>
+                        <option value="sbp">Перевод СБП</option>
+                        <option value="invoice">Счет (для юр.лиц)</option>
+                    </select>
+
+                    <label>Комментарий</label>
+                    <textarea id="notes" placeholder="Дополнительная информация..."></textarea>
+                </div>
+
+                <div class="cart-summary">
+                    <span>Итого:</span>
+                    <strong id="cart-total">0 ₽</strong>
+                </div>
+            </div>
+            
+            <!-- Order Success View -->
+            <div id="view-success" class="view">
+                <div class="success-message">
+                    <h2>✅ Заказ успешно оформлен!</h2>
+                    <p>Номер заказа: <strong id="success-order-id"></strong></p>
+                    <p>Вы можете закрыть это окно и вернуться в бота для отслеживания статуса.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

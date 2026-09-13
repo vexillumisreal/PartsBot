@@ -6,9 +6,10 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.types import KeyboardButton, WebAppInfo
 
 import db
-from config import CATEGORIES
+from config import CATEGORIES, WEBAPP_URL
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -20,6 +21,10 @@ class WholesaleRequestState(StatesGroup):
 
 def get_main_menu(role: str) -> types.ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
+    
+    # Кнопка для WebApp
+    builder.row(KeyboardButton(text="📱 Открыть Mini App", web_app=WebAppInfo(url=WEBAPP_URL)))
+    
     builder.button(text="📦 Каталог запчастей")
     builder.button(text="🔍 Поиск")
     builder.button(text="🛒 Корзина")
