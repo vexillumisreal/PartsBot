@@ -245,3 +245,19 @@ body {
 .success-message h2 {
     color: #34c759;
 }
+
+/* Out-of-stock cards */
+.part-card.out-of-stock {
+    opacity: 0.55;
+}
+
+.out-of-stock-btn {
+    background-color: var(--hint-color) !important;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.no-stock {
+    color: #ff3b30;
+    font-weight: 600;
+}

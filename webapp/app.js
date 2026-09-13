@@ -1,176 +1,201 @@
-let tg = window.Telegram.WebApp;
+const tg = window.Telegram.WebApp;
 tg.expand(); // Expand to full height
 
 let catalog = [];
-let cart = JSON.parse(localStorage.getItem('tg_partsbot_cart')) || {}; // { id: { item, qty } }
-let isWholesale = false; // We can get this from backend if we want
+let cart = JSON.parse(localStorage.getItem("tg_partsbot_cart")) || {}; // { id: { item, qty } }
+let isWholesale = false;
 
 const DOM = {
-    search: document.getElementById('search-input'),
-    catalogList: document.getElementById('catalog-list'),
-    loading: document.getElementById('loading'),
-    viewCatalog: document.getElementById('view-catalog'),
-    viewCart: document.getElementById('view-cart'),
-    viewSuccess: document.getElementById('view-success'),
-    btnCart: document.getElementById('btn-cart'),
-    cartBadge: document.getElementById('cart-badge'),
-    headerTitle: document.getElementById('header-title'),
-    cartItems: document.getElementById('cart-items'),
-    cartTotal: document.getElementById('cart-total'),
-    
+    search: document.getElementById("search-input"),
+    catalogList: document.getElementById("catalog-list"),
+    loading: document.getElementById("loading"),
+    viewCatalog: document.getElementById("view-catalog"),
+    viewCart: document.getElementById("view-cart"),
+    viewSuccess: document.getElementById("view-success"),
+    btnCart: document.getElementById("btn-cart"),
+    cartBadge: document.getElementById("cart-badge"),
+    headerTitle: document.getElementById("header-title"),
+    cartItems: document.getElementById("cart-items"),
+    cartTotal: document.getElementById("cart-total"),
+
     // Form
-    deliveryMethod: document.getElementById('delivery_method'),
-    deliveryAddressWrapper: document.getElementById('delivery_address_wrapper'),
-    deliveryAddress: document.getElementById('delivery_address'),
-    contact: document.getElementById('contact'),
-    paymentMethod: document.getElementById('payment_method'),
-    notes: document.getElementById('notes')
+    deliveryMethod: document.getElementById("delivery_method"),
+    deliveryAddressWrapper: document.getElementById("delivery_address_wrapper"),
+    deliveryAddress: document.getElementById("delivery_address"),
+    contact: document.getElementById("contact"),
+    paymentMethod: document.getElementById("payment_method"),
+    notes: document.getElementById("notes"),
 };
 
 // Listeners
-DOM.search.addEventListener('input', debounce(loadCatalog, 300));
-DOM.btnCart.addEventListener('click', toggleCart);
-DOM.deliveryMethod.addEventListener('change', (e) => {
-    if (e.target.value !== 'pickup') {
-        DOM.deliveryAddressWrapper.style.display = 'block';
-    } else {
-        DOM.deliveryAddressWrapper.style.display = 'none';
-    }
+DOM.search.addEventListener("input", debounce(loadCatalog, 300));
+DOM.btnCart.addEventListener("click", toggleCart);
+DOM.deliveryMethod.addEventListener("change", (e) => {
+    DOM.deliveryAddressWrapper.style.display = e.target.value !== "pickup" ? "block" : "none";
 });
 
 // Setup TG Main Button
-tg.MainButton.textColor = '#ffffff';
-tg.MainButton.color = '#2ce566';
+tg.MainButton.textColor = "#ffffff";
+tg.MainButton.color = "#2ce566";
 
-// Toggle Views
-let currentView = 'catalog';
+// ─── View management ───
+let currentView = "catalog";
+
+function showView(viewId) {
+    currentView = viewId;
+    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+    document.getElementById("view-" + viewId).classList.add("active");
+}
 
 function toggleCart() {
-    if (currentView === 'catalog') {
-        showView('cart');
+    if (currentView === "catalog") {
+        showView("cart");
         DOM.headerTitle.innerText = "Оформление";
-        DOM.btnCart.style.display = 'none';
+        DOM.btnCart.style.display = "none";
         renderCart();
-        
+
         tg.MainButton.text = "ОФОРМИТЬ ЗАКАЗ";
         tg.MainButton.show();
-        tg.onEvent('mainButtonClicked', submitOrder);
+        // Always remove before adding to prevent duplicate listeners (BUG FIX)
+        tg.offEvent("mainButtonClicked", submitOrder);
+        tg.onEvent("mainButtonClicked", submitOrder);
         tg.BackButton.show();
-        tg.onEvent('backButtonClicked', showCatalog);
+        tg.offEvent("backButtonClicked", showCatalog);
+        tg.onEvent("backButtonClicked", showCatalog);
     }
 }
 
 function showCatalog() {
-    showView('catalog');
+    showView("catalog");
     DOM.headerTitle.innerText = "Каталог";
     updateCartBadge();
-    
+
     tg.MainButton.hide();
-    tg.MainButton.offClick(submitOrder);
+    tg.offEvent("mainButtonClicked", submitOrder);
     tg.BackButton.hide();
-    tg.offEvent('backButtonClicked', showCatalog);
+    tg.offEvent("backButtonClicked", showCatalog);
 }
 
-function showView(viewId) {
-    currentView = viewId;
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    document.getElementById('view-' + viewId).classList.add('active');
-}
-
-// Fetch Data
+// ─── Fetch & Render ───
 async function loadCatalog() {
-    DOM.loading.style.display = 'block';
-    DOM.catalogList.innerHTML = '';
-    
-    let query = DOM.search.value;
+    DOM.loading.style.display = "block";
+    DOM.catalogList.innerHTML = "";
+
+    const query = DOM.search.value;
     try {
-        let res = await fetch(`/api/catalog?q=${encodeURIComponent(query)}&limit=100`);
-        let data = await res.json();
-        
+        const res = await fetch(`/api/catalog?q=${encodeURIComponent(query)}&limit=200`);
+        // BUG FIX: check res.ok before calling res.json()
+        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        const data = await res.json();
+
         if (data.ok) {
             catalog = data.parts;
             renderCatalog();
+        } else {
+            throw new Error(data.error || "Unknown error");
         }
     } catch (e) {
-        console.error(e);
-        tg.showAlert("Ошибка при загрузке каталога");
+        console.error("loadCatalog error:", e);
+        DOM.catalogList.innerHTML =
+            '<p style="text-align:center;color:var(--hint-color);">&#9888;&#65039; Ошибка загрузки. Попробуйте ещё раз.</p>';
     } finally {
-        DOM.loading.style.display = 'none';
+        DOM.loading.style.display = "none";
     }
 }
 
+// BUG FIX: format prices properly with Russian locale
+function fmt(price) {
+    return Number(price).toLocaleString("ru-RU");
+}
+
+// BUG FIX: prevent XSS from product names / categories
+function escapeHtml(str) {
+    return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
 function renderCatalog() {
-    DOM.catalogList.innerHTML = '';
-    
+    DOM.catalogList.innerHTML = "";
+
     if (catalog.length === 0) {
-        DOM.catalogList.innerHTML = '<p style="text-align:center;color:var(--hint-color);">Ничего не найдено</p>';
+        DOM.catalogList.innerHTML =
+            '<p style="text-align:center;color:var(--hint-color);">Ничего не найдено</p>';
         return;
     }
-    
-    catalog.forEach(part => {
-        const card = document.createElement('div');
-        card.className = 'part-card';
-        
-        // Use retail price by default. (Logic to switch to wholesale could be added if user is wholesale)
-        const price = part.retail_price;
-        
+
+    catalog.forEach((part) => {
+        const card = document.createElement("div");
+        card.className = "part-card";
+
+        // BUG FIX: use wholesale price when user has wholesale status
+        const price =
+            isWholesale && part.wholesale_price > 0 ? part.wholesale_price : part.retail_price;
         const cartItem = cart[part.id];
         const qty = cartItem ? cartItem.qty : 0;
-        
-        let controlsHTML = '';
-        if (qty > 0) {
+        const outOfStock = part.quantity <= 0;
+
+        // UX IMPROVEMENT: visually dim out-of-stock cards
+        if (outOfStock) {
+            card.classList.add("out-of-stock");
+        }
+
+        let controlsHTML = "";
+        if (outOfStock) {
+            controlsHTML = `<button class="add-to-cart-btn out-of-stock-btn" disabled>Нет в наличии</button>`;
+        } else if (qty > 0) {
             controlsHTML = `
                 <div class="quantity-controls">
-                    <button class="qty-btn" onclick="updateCart(${part.id}, -1)">-</button>
+                    <button class="qty-btn" onclick="updateCart(${part.id}, -1)">&minus;</button>
                     <span>${qty}</span>
                     <button class="qty-btn" onclick="updateCart(${part.id}, 1)">+</button>
-                </div>
-            `;
+                </div>`;
         } else {
             controlsHTML = `<button class="add-to-cart-btn" onclick="updateCart(${part.id}, 1)">Добавить</button>`;
         }
-        
+
         card.innerHTML = `
-            <div class="part-title">${part.name}</div>
-            <div class="part-meta">${part.category} > ${part.subcategory}</div>
-            <div class="part-meta">Остаток: ${part.quantity} шт.</div>
+            <div class="part-title">${escapeHtml(part.name)}</div>
+            <div class="part-meta">${escapeHtml(part.category)} › ${escapeHtml(part.subcategory || "")}</div>
+            <div class="part-meta">Остаток: ${outOfStock ? '<span class="no-stock">нет</span>' : part.quantity + " шт."}</div>
             <div class="part-price-row">
-                <div class="price">${price} ₽</div>
+                <div class="price">${fmt(price)} ₽</div>
                 ${controlsHTML}
-            </div>
-        `;
+            </div>`;
         DOM.catalogList.appendChild(card);
     });
 }
 
-window.updateCart = function(id, delta) {
-    let part = catalog.find(p => p.id == id);
+window.updateCart = function (id, delta) {
+    let part = catalog.find((p) => p.id == id);
     if (!part && cart[id]) {
         part = cart[id].item;
     }
     if (!part) return;
-    
+
     if (!cart[id]) {
         cart[id] = { item: part, qty: 0 };
     }
-    
+
     cart[id].qty += delta;
-    
+
     if (cart[id].qty > part.quantity) {
         cart[id].qty = part.quantity;
-        tg.showAlert("Недостаточно на складе!");
+        tg.showAlert("На складе всего " + part.quantity + " шт.");
     }
-    
+
     if (cart[id].qty <= 0) {
         delete cart[id];
     }
-    
-    localStorage.setItem('tg_partsbot_cart', JSON.stringify(cart));
-    
-    if (currentView === 'catalog') {
+
+    localStorage.setItem("tg_partsbot_cart", JSON.stringify(cart));
+
+    if (currentView === "catalog") {
         renderCatalog();
         updateCartBadge();
-    } else if (currentView === 'cart') {
+    } else if (currentView === "cart") {
         renderCart();
         updateCartBadge();
     }
@@ -179,79 +204,81 @@ window.updateCart = function(id, delta) {
 function updateCartBadge() {
     const count = Object.keys(cart).length;
     if (count > 0) {
-        DOM.btnCart.style.display = 'block';
+        DOM.btnCart.style.display = "block";
         DOM.cartBadge.innerText = count;
     } else {
-        DOM.btnCart.style.display = 'none';
+        DOM.btnCart.style.display = "none";
     }
 }
 
 function renderCart() {
-    DOM.cartItems.innerHTML = '';
+    DOM.cartItems.innerHTML = "";
     let total = 0;
-    
+
     const ids = Object.keys(cart);
     if (ids.length === 0) {
-        DOM.cartItems.innerHTML = '<p>Корзина пуста</p>';
-        DOM.cartTotal.innerText = '0 ₽';
+        DOM.cartItems.innerHTML = "<p>Корзина пуста</p>";
+        DOM.cartTotal.innerText = "0 ₽";
         tg.MainButton.hide();
         return;
     }
-    
-    ids.forEach(id => {
+
+    ids.forEach((id) => {
         const c = cart[id];
-        const price = c.item.retail_price;
+        // BUG FIX: respect wholesale pricing in cart view too
+        const price =
+            isWholesale && c.item.wholesale_price > 0 ? c.item.wholesale_price : c.item.retail_price;
         const sum = price * c.qty;
         total += sum;
-        
-        const el = document.createElement('div');
-        el.className = 'cart-item';
+
+        const el = document.createElement("div");
+        el.className = "cart-item";
         el.innerHTML = `
             <div class="cart-item-info">
-                <h4>${c.item.name}</h4>
-                <p>${price} ₽ × ${c.qty} шт. = <strong>${sum} ₽</strong></p>
+                <h4>${escapeHtml(c.item.name)}</h4>
+                <p>${fmt(price)} ₽ &times; ${c.qty} шт. = <strong>${fmt(sum)} ₽</strong></p>
             </div>
             <div class="quantity-controls">
-                <button class="qty-btn" onclick="updateCart(${id}, -1)">-</button>
+                <button class="qty-btn" onclick="updateCart(${id}, -1)">&minus;</button>
                 <span>${c.qty}</span>
                 <button class="qty-btn" onclick="updateCart(${id}, 1)">+</button>
-            </div>
-        `;
+            </div>`;
         DOM.cartItems.appendChild(el);
     });
-    
-    DOM.cartTotal.innerText = `${total} ₽`;
+
+    DOM.cartTotal.innerText = `${fmt(total)} ₽`;
     tg.MainButton.show();
 }
 
 async function submitOrder() {
-    let items = Object.values(cart).map(c => ({
+    const items = Object.values(cart).map((c) => ({
         id: c.item.id,
         quantity: c.qty,
-        price: c.item.retail_price
+        price:
+            isWholesale && c.item.wholesale_price > 0 ? c.item.wholesale_price : c.item.retail_price,
     }));
-    
+
     if (items.length === 0) return;
-    
-    let userId = tg.initDataUnsafe?.user?.id || 0;
-    let userName = tg.initDataUnsafe?.user?.first_name || "Web Client";
-    
-    let contact = DOM.contact.value.trim();
+
+    const userId = tg.initDataUnsafe?.user?.id || 0;
+    const userName = tg.initDataUnsafe?.user?.first_name || "Web Client";
+
+    const contact = DOM.contact.value.trim();
     if (!contact) {
         tg.showAlert("Укажите контактный телефон");
         return;
     }
-    
-    let delivery = DOM.deliveryMethod.value;
-    let address = DOM.deliveryAddress.value.trim();
-    if (delivery !== 'pickup' && !address) {
+
+    const delivery = DOM.deliveryMethod.value;
+    const address = DOM.deliveryAddress.value.trim();
+    if (delivery !== "pickup" && !address) {
         tg.showAlert("Укажите адрес доставки");
         return;
     }
 
     tg.MainButton.showProgress();
-    
-    let payload = {
+
+    const payload = {
         user_id: userId,
         user_name: userName,
         contact: contact,
@@ -259,51 +286,78 @@ async function submitOrder() {
         delivery_address: address,
         payment_method: DOM.paymentMethod.value,
         notes: DOM.notes.value.trim(),
-        items: items
+        items: items,
     };
 
     try {
-        let res = await fetch('/api/order', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+        const res = await fetch("/api/order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
         });
-        
-        let data = await res.json();
+
+        // BUG FIX: check HTTP status before parsing JSON
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Server ${res.status}: ${text}`);
+        }
+
+        const data = await res.json();
         if (data.ok) {
             cart = {};
-            localStorage.removeItem('tg_partsbot_cart');
-            showView('success');
-            document.getElementById('success-order-id').innerText = data.order_id;
+            localStorage.removeItem("tg_partsbot_cart");
+            showView("success");
+            document.getElementById("success-order-id").innerText = data.order_id;
             DOM.headerTitle.innerText = "Готово";
             tg.MainButton.hide();
             tg.BackButton.hide();
-            tg.MainButton.offClick(submitOrder);
-            
-            // Allow user to close WebApp
+            tg.offEvent("mainButtonClicked", submitOrder);
+
+            // Close WebApp after 5 seconds
             setTimeout(() => {
                 tg.close();
             }, 5000);
         } else {
-            tg.showAlert("Ошибка: " + data.error);
+            tg.showAlert("Ошибка: " + (data.error || "неизвестная ошибка"));
         }
     } catch (e) {
-        console.error(e);
-        tg.showAlert("Сетевая ошибка при отправке");
+        console.error("submitOrder error:", e);
+        tg.showAlert("Сетевая ошибка при отправке. Попробуйте ещё раз.");
     } finally {
         tg.MainButton.hideProgress();
+    }
+}
+
+// ─── Fetch wholesale status from backend ───
+async function loadUserStatus() {
+    const userId = tg.initDataUnsafe?.user?.id;
+    if (!userId) return;
+    try {
+        const res = await fetch(`/api/user_status?user_id=${userId}`);
+        if (res.ok) {
+            const data = await res.json();
+            if (data.ok) {
+                isWholesale = data.status === "wholesale";
+            }
+        }
+    } catch (e) {
+        // Non-critical — default to retail pricing
+        console.warn("Could not fetch user status:", e);
     }
 }
 
 // Utils
 function debounce(func, wait) {
     let timeout;
-    return function(...args) {
+    return function (...args) {
         clearTimeout(timeout);
         timeout = setTimeout(() => func.apply(this, args), wait);
     };
 }
 
 // Init
-loadCatalog();
-updateCartBadge();
+(async () => {
+    await loadUserStatus();
+    loadCatalog();
+    updateCartBadge();
+})();

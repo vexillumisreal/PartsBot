@@ -2,12 +2,6 @@
 
 import html
 import zlib
-
-
-def get_model_hash(model_name: str) -> str:
-    return hex(zlib.crc32(model_name.encode("utf-8")))[2:]
-
-
 import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -22,8 +16,19 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def get_model_hash(model_name: str) -> str:
+    return hex(zlib.crc32(model_name.encode("utf-8")))[2:]
+
+
+
+
 class SearchState(StatesGroup):
     query = State()
+
+
+# In-memory store: crc32_hex -> full query string.
+# Bounded to last ~1000 unique queries; cleared on bot restart (acceptable for search pagination).
+SEARCH_QUERIES: dict[str, str] = {}
 
 
 # ─────────────────── helpers ───────────────────
@@ -509,15 +514,18 @@ async def render_search_results(target: types.Message | types.CallbackQuery, que
         )
     detail_builder.adjust(1)
 
-    # Пагинация для поиска
+    # Пагинация поиска с хранением запроса по crc32-хэшу (обход лимита TG 64 байта)
+    q_hash = hex(zlib.crc32(query.encode("utf-8")))[2:]
+    SEARCH_QUERIES[q_hash] = query  # сохраняем полный запрос по хэшу
+    if len(SEARCH_QUERIES) > 1000:  # простая защита от переполнения памяти
+        oldest = next(iter(SEARCH_QUERIES))
+        del SEARCH_QUERIES[oldest]
+
     nav_buttons = []
-    # Кодируем запрос без пробелов для безопасного callback_data (ограничение TG: 64 байта)
-    # Используем короткий префикс `sp_{page}` и сохраняем query или передаем в callback
-    safe_query = query[:20].replace(" ", "_")
     if page > 0:
-        nav_buttons.append((f"◀ Пред. ({page})", f"srch_{safe_query}_p{page - 1}"))
+        nav_buttons.append((f"◀ Пред. ({page})", f"srch_{q_hash}_p{page - 1}"))
     if (page + 1) * PAGE_SIZE < total:
-        nav_buttons.append((f"След. ({page + 2}) ▶", f"srch_{safe_query}_p{page + 1}"))
+        nav_buttons.append((f"След. ({page + 2}) ▶", f"srch_{q_hash}_p{page + 1}"))
 
     pag_builder = InlineKeyboardBuilder()
     for btn_text, btn_cb in nav_buttons:
@@ -544,12 +552,16 @@ async def render_search_results(target: types.Message | types.CallbackQuery, que
 async def search_pagination_cb(callback: types.CallbackQuery) -> None:
     raw = callback.data[5:]  # убираем 'srch_'
     page = 0
+    q_hash = raw
     if "_p" in raw:
-        raw_query, p_str = raw.rsplit("_p", 1)
+        q_hash, p_str = raw.rsplit("_p", 1)
         page = int(p_str) if p_str.isdigit() else 0
-        query = raw_query.replace("_", " ")
-    else:
-        query = raw.replace("_", " ")
+
+    # Восстанавливаем полный запрос по хэшу
+    query = SEARCH_QUERIES.get(q_hash, "")
+    if not query:
+        await callback.answer("⚠️ Сессия поиска истекла. Начните поиск заново.", show_alert=True)
+        return
 
     await render_search_results(callback, query, page=page)
     await callback.answer()

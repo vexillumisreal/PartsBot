@@ -602,26 +602,41 @@ async def get_parts_by_category(
 
 async def search_parts(query: str, page: int = 0, page_size: int = 8) -> tuple[list[tuple], int]:
     words = query.strip().split()
-    if not words:
-        return [], 0
-
-    conditions = []
-    params = []
-    for word in words:
-        conditions.append("(name LIKE ? OR category LIKE ? OR subcategory LIKE ?)")
-        pattern = f"%{word}%"
-        params.extend([pattern, pattern, pattern])
-
-    where_clause = " AND ".join(conditions)
     offset = page * page_size
 
     async with aiosqlite.connect(DB_NAME) as db:
+        if not words:
+            # Empty query — return the full active catalog sorted by category/name
+            async with db.execute("SELECT COUNT(*) FROM parts WHERE is_active=1") as cur:
+                total = (await cur.fetchone())[0]
+            async with db.execute(
+                """
+                SELECT id, name, retail_price, wholesale_price, quantity,
+                       category, subcategory, part_type, cost_price
+                FROM parts WHERE is_active=1
+                ORDER BY category, subcategory, name LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
+            ) as cur:
+                rows = await cur.fetchall()
+            return list(rows), total
+
+        conditions = []
+        params: list = []
+        for word in words:
+            conditions.append("(name LIKE ? OR category LIKE ? OR subcategory LIKE ?)")
+            pattern = f"%{word}%"
+            params.extend([pattern, pattern, pattern])
+
+        where_clause = " AND ".join(conditions)
+
         async with db.execute(f"SELECT COUNT(*) FROM parts WHERE {where_clause} AND is_active=1", params) as cur:
             total = (await cur.fetchone())[0]
 
         async with db.execute(
             f"""
-            SELECT id, name, retail_price, wholesale_price, quantity, category, subcategory, part_type, cost_price
+            SELECT id, name, retail_price, wholesale_price, quantity,
+                   category, subcategory, part_type, cost_price
             FROM parts WHERE {where_clause} AND is_active=1
             ORDER BY name LIMIT ? OFFSET ?
             """,
@@ -629,9 +644,6 @@ async def search_parts(query: str, page: int = 0, page_size: int = 8) -> tuple[l
         ) as cur:
             rows = await cur.fetchall()
 
-        # Keep returning the original 6 columns for backwards compatibility,
-        # but db search now actually returns more if needed elsewhere (like webapp).
-        # We'll just return the full rows, the callers usually unpack what they need or slice.
         return list(rows), total
 
 
