@@ -18,8 +18,24 @@ def clear_test_data():
     ]
     
     for table in tables_to_clear:
-        cursor.execute(f"DELETE FROM {table}")
-        print(f"Cleared table: {table}")
+        try:
+            cursor.execute(f"DELETE FROM {table}")
+            print(f"Cleared table: {table}")
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                print(f"Skipping table {table} (does not exist)")
+            else:
+                raise
+                
+    # Reset all parts quantities to 0
+    try:
+        cursor.execute("UPDATE parts SET quantity = 0")
+        print("Reset all parts quantities to 0.")
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            print("Skipping parts reset (does not exist)")
+        else:
+            raise
         
     # Delete users except admins
     if ADMIN_IDS:

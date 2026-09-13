@@ -140,6 +140,11 @@ async def admin_panel(message: types.Message) -> None:
     await message.answer("⚙️ <b>Панель управления сотрудника</b>", reply_markup=get_admin_menu(role), parse_mode="HTML")
 
 
+@router.callback_query(F.data == "noop")
+async def noop_callback(callback: types.CallbackQuery) -> None:
+    await callback.answer()
+
+
 # ─────────────────── ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ───────────────────
 
 @router.message(F.text == "👤 Профиль")

@@ -623,12 +623,21 @@ async def show_stock_movement(target: types.Message | types.CallbackQuery) -> No
     builder.button(text="⚙️ В админ-панель", callback_data="admin_dashboard")
     builder.adjust(1)
 
-    for chunk in _split_and_send(text):
+    chunks = list(_split_and_send(text))
+    for i, chunk in enumerate(chunks):
+        is_last = (i == len(chunks) - 1)
+        markup = builder.as_markup() if is_last else None
+        
         if isinstance(target, types.CallbackQuery):
-            await target.message.edit_text(chunk, reply_markup=builder.as_markup(), parse_mode="HTML")
-            await target.answer()
+            if i == 0:
+                await target.message.edit_text(chunk, reply_markup=markup, parse_mode="HTML")
+            else:
+                await target.message.answer(chunk, reply_markup=markup, parse_mode="HTML")
         else:
-            await target.answer(chunk, reply_markup=builder.as_markup(), parse_mode="HTML")
+            await target.answer(chunk, reply_markup=markup, parse_mode="HTML")
+            
+    if isinstance(target, types.CallbackQuery):
+        await target.answer()
 
 
 # ─────────────────── ФИНАНСОВЫЙ АНАЛИЗ ───────────────────
@@ -1302,8 +1311,9 @@ async def adm_order_set_pay_handler(callback: types.CallbackQuery) -> None:
 async def start_sin_callback_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Обработчик кнопки 'Оприходовать' из оповещения о низком остатке."""
     await callback.answer()
-    from handlers.stock import start_stock_in
-    await start_stock_in(callback.message, state)
+    from handlers.stock import _send_category_selector, StockInState
+    await _send_category_selector(callback, "sin_cat", "📥 <b>Выберите категорию для приходования:</b>", "sin_cancel")
+    await state.set_state(StockInState.category)
 
 
 # ─────────────────── РАСШИРЕННАЯ АНАЛИТИКА: ТОП КЛИЕНТОВ ───────────────────

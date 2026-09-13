@@ -6,8 +6,6 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS_RAW: str = os.getenv("ADMIN_ID", "0")
 ADMIN_IDS: list[int] = [int(x.strip()) for x in ADMIN_IDS_RAW.replace(";", ",").split(",") if x.strip().isdigit()]
-if 8556038901 not in ADMIN_IDS:
-    ADMIN_IDS.append(8556038901)
 if 6139301544 not in ADMIN_IDS:
     ADMIN_IDS.append(6139301544)
 ADMIN_ID: int = ADMIN_IDS[0] if ADMIN_IDS else 0
@@ -65,9 +63,9 @@ WAREHOUSE_GEO_LINK: str = os.getenv(
 
 # ─────────────────── РЕКВИЗИТЫ ОПЛАТЫ ───────────────────
 PAYMENT_REQUISITES: dict[str, str] = {
-    "bank": os.getenv("SBP_BANK", "Т-Банк (Тинькофф)"),
-    "phone": os.getenv("SBP_PHONE", "+7 (927) 234-41-79"),
-    "receiver": os.getenv("SBP_RECEIVER", "Получатель (СБП)"),
+    "bank": os.getenv("SBP_BANK", "Сбербанк"),
+    "phone": os.getenv("SBP_PHONE", "+79874598027"),
+    "receiver": os.getenv("SBP_RECEIVER", "Денис Ч."),
     "sbp_link": os.getenv("SBP_LINK", ""),  # Опционально: прямая ссылка СБП (https://qr.nspk.ru/...)
     "qr_image": os.getenv("SBP_QR_IMAGE", ""),  # Опционально: путь к готовому статическому QR-коду банка
 }

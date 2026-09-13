@@ -596,7 +596,7 @@ async def update_order_status_cb(callback: types.CallbackQuery, bot: Bot) -> Non
 
         old_caption = callback.message.html_text if hasattr(callback.message, "html_text") else callback.message.text
         updated_text = (
-            f"{callback.message.text}\n\n"
+            f"{old_caption}\n\n"
             f"<i>Обновлено: {status_label} (сотрудник: {html.escape(callback.from_user.full_name)})</i>"
         )
         try:
@@ -636,8 +636,9 @@ async def update_order_payment_cb(callback: types.CallbackQuery, bot: Bot) -> No
         except Exception:
             pass
 
+        old_caption = callback.message.html_text if hasattr(callback.message, "html_text") else callback.message.text
         updated_text = (
-            f"{callback.message.text}\n\n"
+            f"{old_caption}\n\n"
             f"<i>💳 Оплата отмечена: {pay_label} (сотрудник: {html.escape(callback.from_user.full_name)})</i>"
         )
         try:
