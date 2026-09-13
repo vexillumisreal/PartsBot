@@ -1,5 +1,9 @@
 """handlers/catalog.py — каталог, поиск с полной пагинацией, карточки запчастей и интеграция с корзиной."""
 import html
+import zlib
+
+def get_model_hash(model_name: str) -> str:
+    return hex(zlib.crc32(model_name.encode("utf-8")))[2:]
 import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -159,9 +163,10 @@ async def show_brand_models(callback: types.CallbackQuery) -> None:
     page_models = models[page * page_size : (page + 1) * page_size]
 
     builder = InlineKeyboardBuilder()
-    for idx, (m_name, cnt) in enumerate(page_models, start=page * page_size):
+    for m_name, cnt in page_models:
         clean_btn = m_name[:26]
-        builder.button(text=f"📂 {clean_btn} ({cnt})", callback_data=f"cmd_{b_code}_{idx}")
+        m_hash = get_model_hash(m_name)
+        builder.button(text=f"📂 {clean_btn} ({cnt})", callback_data=f"cmd_{b_code}_{m_hash}")
     builder.adjust(1)
 
     nav = []
@@ -193,14 +198,14 @@ async def show_brand_models(callback: types.CallbackQuery) -> None:
 async def show_model_part_types(callback: types.CallbackQuery) -> None:
     parts_tok = callback.data[4:].split("_")
     b_code = parts_tok[0]
-    model_idx = int(parts_tok[1])
+    m_hash = parts_tok[1]
 
     brand = CODE_TO_BRAND.get(b_code, b_code)
     models = await db.get_models_by_brand(brand)
-    if model_idx >= len(models):
+    model = next((m for m, cnt in models if get_model_hash(m) == m_hash), None)
+    if not model:
         await callback.answer("Модель не найдена", show_alert=True)
         return
-    model = models[model_idx][0]
 
     types_list = await db.get_part_types_by_model(brand, model)
     total_parts = sum(c for _, c in types_list)
@@ -208,8 +213,8 @@ async def show_model_part_types(callback: types.CallbackQuery) -> None:
     builder = InlineKeyboardBuilder()
     for ptype, cnt in types_list:
         t_code = TYPE_CODES.get(ptype, "oth")
-        builder.button(text=f"⚙️ {ptype} ({cnt})", callback_data=f"ctp_{b_code}_{model_idx}_{t_code}")
-    builder.button(text=f"📦 Все запчасти модели ({total_parts})", callback_data=f"ctp_{b_code}_{model_idx}_all")
+        builder.button(text=f"⚙️ {ptype} ({cnt})", callback_data=f"ctp_{b_code}_{m_hash}_{t_code}")
+    builder.button(text=f"📦 Все запчасти модели ({total_parts})", callback_data=f"ctp_{b_code}_{m_hash}_all")
     builder.button(text=f"🔙 К моделям {brand}", callback_data=f"cbr_{b_code}")
     builder.button(text="🛒 Корзина", callback_data="view_cart")
     builder.adjust(1)
@@ -235,15 +240,15 @@ async def show_parts_by_type(callback: types.CallbackQuery) -> None:
 
     tokens = raw.split("_")
     b_code = tokens[0]
-    model_idx = int(tokens[1])
+    m_hash = tokens[1]
     t_code = tokens[2]
 
     brand = CODE_TO_BRAND.get(b_code, b_code)
     models = await db.get_models_by_brand(brand)
-    if model_idx >= len(models):
+    model = next((m for m, cnt in models if get_model_hash(m) == m_hash), None)
+    if not model:
         await callback.answer("Модель не найдена", show_alert=True)
         return
-    model = models[model_idx][0]
 
     part_type = None if t_code == "all" else CODE_TO_TYPE.get(t_code, t_code)
     await _show_parts_list(
@@ -253,7 +258,7 @@ async def show_parts_by_type(callback: types.CallbackQuery) -> None:
         part_type=part_type,
         page=page,
         b_code=b_code,
-        model_idx=model_idx,
+        m_hash=m_hash,
         t_code=t_code,
     )
     await callback.answer()
@@ -266,7 +271,7 @@ async def _show_parts_list(
     part_type: str | None,
     page: int,
     b_code: str = "",
-    model_idx: int = 0,
+    m_hash: str = "",
     t_code: str = "all",
 ) -> None:
     status = await db.get_user_status(callback.from_user.id)
@@ -276,7 +281,7 @@ async def _show_parts_list(
 
     if not parts:
         builder = InlineKeyboardBuilder()
-        builder.button(text="🔙 Назад", callback_data=f"cmd_{b_code}_{model_idx}" if model else "back_catalog")
+        builder.button(text="🔙 Назад", callback_data=f"cmd_{b_code}_{m_hash}" if model else "back_catalog")
         title_target = f"категории <b>{html.escape(part_type or 'Все')}</b>"
         await callback.message.edit_text(
             f"⚠️ В {title_target} пока нет запчастей.",
@@ -290,7 +295,7 @@ async def _show_parts_list(
     if is_wholesale:
         title += " <i>(Оптовые цены)</i>"
 
-    cb_prefix = f"ctp_{b_code}_{model_idx}_{t_code}"
+    cb_prefix = f"ctp_{b_code}_{m_hash}_{t_code}"
     back_cb = f"cmd_{b_code}_{model_idx}" if model else "back_catalog"
 
     total_pages = max(1, -(-total // PAGE_SIZE))

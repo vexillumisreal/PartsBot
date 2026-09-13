@@ -2,7 +2,7 @@ let tg = window.Telegram.WebApp;
 tg.expand(); // Expand to full height
 
 let catalog = [];
-let cart = {}; // { id: { item, qty } }
+let cart = JSON.parse(localStorage.getItem('tg_partsbot_cart')) || {}; // { id: { item, qty } }
 let isWholesale = false; // We can get this from backend if we want
 
 const DOM = {
@@ -144,7 +144,10 @@ function renderCatalog() {
 }
 
 window.updateCart = function(id, delta) {
-    const part = catalog.find(p => p.id === id);
+    let part = catalog.find(p => p.id == id);
+    if (!part && cart[id]) {
+        part = cart[id].item;
+    }
     if (!part) return;
     
     if (!cart[id]) {
@@ -162,12 +165,14 @@ window.updateCart = function(id, delta) {
         delete cart[id];
     }
     
-    // If we are in cart view, render cart, otherwise render catalog to update buttons
+    localStorage.setItem('tg_partsbot_cart', JSON.stringify(cart));
+    
     if (currentView === 'catalog') {
         renderCatalog();
         updateCartBadge();
     } else if (currentView === 'cart') {
         renderCart();
+        updateCartBadge();
     }
 };
 
@@ -267,6 +272,7 @@ async function submitOrder() {
         let data = await res.json();
         if (data.ok) {
             cart = {};
+            localStorage.removeItem('tg_partsbot_cart');
             showView('success');
             document.getElementById('success-order-id').innerText = data.order_id;
             DOM.headerTitle.innerText = "Готово";
@@ -300,3 +306,4 @@ function debounce(func, wait) {
 
 // Init
 loadCatalog();
+updateCartBadge();
