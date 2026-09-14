@@ -1,4 +1,5 @@
 import logging
+import os
 from aiohttp import web
 import db
 
@@ -160,8 +161,9 @@ async def setup_webapp() -> web.AppRunner:
     runner = web.AppRunner(app)
     await runner.setup()
 
-    site = web.TCPSite(runner, "0.0.0.0", 8888)
+    port = int(os.environ.get("PORT", 8888))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("WebApp server started on http://0.0.0.0:8888")
+    logger.info("WebApp server started on http://0.0.0.0:%s", port)
 
     return runner
