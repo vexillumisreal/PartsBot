@@ -8,7 +8,7 @@ ADMIN_IDS_RAW: str = os.getenv("ADMIN_ID", "0")
 ADMIN_IDS: list[int] = [int(x.strip()) for x in ADMIN_IDS_RAW.replace(";", ",").split(",") if x.strip().isdigit()]
 # NOTE: Do NOT hardcode admin IDs here. Add them to .env: ADMIN_ID=123456789,987654321
 ADMIN_ID: int = ADMIN_IDS[0] if ADMIN_IDS else 0
-WEBAPP_URL: str = os.getenv("WEBAPP_URL", "https://example.com/")
+WEBAPP_URL: str = os.getenv("WEBAPP_URL", "https://bot-1789310714-4055-vexillumisreal.bothost.tech/")
 
 
 # Основные бренды каталога (Уровень 1)

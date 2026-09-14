@@ -90,7 +90,11 @@ async def create_order(request: web.Request) -> web.Response:
                 {"ok": False, "error": "user_id и items обязательны"}, status=400
             )
 
-        # ── Stock validation ────────────────────────────────────────────────
+        user_status = await db.get_user_status(user_id)
+        is_wholesale = user_status == "wholesale"
+        calculated_total_sum = 0.0
+
+        # ── Stock validation & Price calculation ────────────────────────────────
         for item in items:
             part_id = int(item.get("id", 0))
             requested_qty = int(item.get("quantity", 0))
@@ -98,19 +102,27 @@ async def create_order(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"ok": False, "error": f"Некорректное количество для товара {part_id}"}, status=400
                 )
-            stock_qty = await db.get_part_quantity(part_id)
+            
+            part = await db.get_part(part_id)
+            if not part:
+                return web.json_response(
+                    {"ok": False, "error": f"Товар {part_id} не найден"}, status=404
+                )
+                
+            stock_qty = part[5]
             if stock_qty < requested_qty:
-                part = await db.get_part(part_id)
-                name = part[1] if part else f"ID {part_id}"
+                name = part[1]
                 return web.json_response(
                     {"ok": False, "error": f"Недостаточно на складе: «{name}» — {stock_qty} шт."},
                     status=409,
                 )
+                
+            actual_price = part[4] if is_wholesale else part[3]
+            item["price"] = actual_price
+            calculated_total_sum += float(actual_price) * requested_qty
         # ───────────────────────────────────────────────────────────────────
 
-        total_sum = sum(
-            float(item.get("price", 0)) * int(item.get("quantity", 1)) for item in items
-        )
+        total_sum = calculated_total_sum
 
         order_id = await db.create_order(
             user_id=user_id,
