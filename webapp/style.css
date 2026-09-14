@@ -210,6 +210,48 @@ body {
     font-weight: 500;
 }
 
+/* Category Filter Chips */
+.chips-container {
+    padding: 0 20px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.chips-container::-webkit-scrollbar {
+    display: none;
+}
+
+.chip {
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 20px;
+    background: var(--secondary-bg-color);
+    color: var(--hint-color);
+    border: 1px solid var(--glass-border);
+    cursor: pointer;
+    transition: var(--transition);
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.chip:hover {
+    color: var(--text-color);
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.chip.active {
+    background: var(--button-color);
+    color: var(--button-text-color);
+    border-color: var(--button-color);
+    box-shadow: 0 2px 8px rgba(10, 132, 255, 0.3);
+}
+
 /* Main Content */
 .content {
     flex: 1;
@@ -316,8 +358,22 @@ body {
     color: var(--hint-color);
     margin-bottom: 12px;
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.part-type-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(10, 132, 255, 0.15);
+    color: var(--link-color);
+    border: 1px solid rgba(10, 132, 255, 0.25);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .part-price-row {
@@ -604,4 +660,61 @@ textarea.modern-input {
     color: var(--hint-color);
     font-size: 14px;
     margin-top: 16px;
+    max-width: 320px;
+    line-height: 1.5;
+}
+
+.success-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+    width: 100%;
+    max-width: 320px;
+}
+
+.modern-btn {
+    flex: 1;
+    padding: 14px 20px;
+    border-radius: var(--border-radius-sm);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+    border: none;
+    outline: none;
+    text-align: center;
+}
+
+.primary-btn {
+    background: var(--button-color);
+    color: var(--button-text-color);
+}
+
+.primary-btn:hover {
+    background: var(--link-color);
+    transform: translateY(-1px);
+}
+
+.primary-btn:active {
+    transform: translateY(1px);
+}
+
+.secondary-btn {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-color);
+    border: 1px solid var(--glass-border);
+}
+
+.secondary-btn:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* Safe area support for modern phones */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+    #app {
+        padding-bottom: max(20px, env(safe-area-inset-bottom));
+    }
+    .header {
+        padding-top: max(16px, env(safe-area-inset-top));
+    }
 }

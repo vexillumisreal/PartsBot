@@ -54,11 +54,22 @@ async def on_startup() -> None:
         logger.info("Суперадминистратор ID=%s активирован.", a_id)
 
     global web_runner
-    web_runner = await setup_webapp()
+    web_runner = await setup_webapp(bot)
 
     await bot.set_chat_menu_button(
         menu_button=MenuButtonWebApp(text="📱 Каталог", web_app=WebAppInfo(url=WEBAPP_URL))
     )
+
+    from aiogram.types import BotCommand
+    await bot.set_my_commands([
+        BotCommand(command="start", description="📋 Главное меню"),
+        BotCommand(command="search", description="🔍 Поиск запчастей"),
+        BotCommand(command="cart", description="🛒 Корзина"),
+        BotCommand(command="orders", description="📦 Мои заказы"),
+        BotCommand(command="profile", description="👤 Личный кабинет"),
+        BotCommand(command="help", description="ℹ️ Справка"),
+        BotCommand(command="cancel", description="❌ Отмена действия"),
+    ])
 
     me = await bot.get_me()
     logger.info("Бот успешно запущен: @%s (id=%s)", me.username, me.id)

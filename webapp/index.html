@@ -42,6 +42,11 @@
             <!-- Populated by JS -->
         </div>
 
+        <!-- Category Filter Chips -->
+        <div class="chips-container" id="category-chips" style="display: none;">
+            <!-- Populated by JS -->
+        </div>
+
         <!-- Main Content -->
         <main class="content">
             <!-- Catalog View -->
@@ -109,7 +114,11 @@
                     </div>
                     <h2>Заказ успешно оформлен!</h2>
                     <p>Номер заказа: <strong id="success-order-id" class="order-id-badge"></strong></p>
-                    <p class="success-hint">Вы можете закрыть это окно и вернуться в бота для отслеживания статуса.</p>
+                    <p class="success-hint">Чек и реквизиты отправлены вам в чат бота. Менеджер уже обрабатывает ваш заказ!</p>
+                    <div class="success-actions">
+                        <button id="btn-success-catalog" class="modern-btn primary-btn">📦 В каталог</button>
+                        <button id="btn-success-close" class="modern-btn secondary-btn">Закрыть окно</button>
+                    </div>
                 </div>
             </div>
         </main>

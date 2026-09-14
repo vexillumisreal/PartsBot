@@ -1,7 +1,21 @@
+import asyncio
+import html
 import logging
 import os
 from aiohttp import web
+from aiogram import Bot
+from aiogram.types import FSInputFile
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 import db
+from config import (
+    CURRENCY,
+    WAREHOUSE_ADDRESS,
+    WAREHOUSE_HOURS,
+    WAREHOUSE_PHONE,
+    WAREHOUSE_GEO_LINK,
+    PAYMENT_REQUISITES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +67,7 @@ async def get_catalog(request: web.Request) -> web.Response:
         return web.json_response(
             {"ok": True, "parts": catalog_list, "total": total_count, "page": page, "limit": page_size}
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Error fetching catalog")
         return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
 
@@ -98,7 +112,7 @@ async def get_api_parts(request: web.Request) -> web.Response:
                 "retail_price": p[2],
                 "wholesale_price": p[3],
                 "quantity": p[4],
-                "part_type": p[5],
+                "part_type": p[5] or "",
                 "category": brand,
                 "subcategory": model,
             }
@@ -125,32 +139,165 @@ async def get_user_status(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
 
 
+# ─── Order Notifications Helper ───
+async def _notify_order_creation(
+    bot: Bot,
+    order_id: int,
+    user_id: int,
+    user_name: str,
+    contact: str,
+    delivery_method: str,
+    delivery_address: str,
+    payment_method: str,
+    payment_status: str,
+    notes: str,
+    items: list[dict],
+    total_amount: float,
+) -> None:
+    from handlers.orders import (
+        DELIVERY_NAMES,
+        PAYMENT_NAMES,
+        PAYMENT_STATUS_NAMES,
+        generate_sbp_qr,
+    )
+
+    del_label = DELIVERY_NAMES.get(delivery_method, delivery_method)
+    pay_label = PAYMENT_NAMES.get(payment_method, payment_method)
+
+    # 1. Оповещение персонала
+    try:
+        staff_list = await db.get_sales_managers()
+        items_summary = "\n".join(
+            f"• {html.escape(str(i.get('name') or i.get('part_name') or 'Товар'))} — {i.get('quantity', i.get('qty', 1))} шт. × {float(i.get('price', 0)):.0f} {CURRENCY}"
+            for i in items
+        )
+        staff_text = (
+            f"🛍️ <b>НОВЫЙ ЗАКАЗ #{order_id} (из Mini App)!</b>\n\n"
+            f"👤 Клиент: <b>{html.escape(user_name)}</b> (ID: <code>{user_id}</code>)\n"
+            f"📞 Контакт: <code>{html.escape(contact)}</code>\n"
+            f"🚚 Доставка: <b>{del_label}</b>\n"
+            f"📍 Адрес/ПВЗ: <code>{html.escape(delivery_address or '—')}</code>\n"
+            f"💳 Оплата: <b>{pay_label}</b> ({PAYMENT_STATUS_NAMES.get(payment_status, payment_status)})\n"
+            f"📝 Примечание: <i>{html.escape(notes)}</i>\n\n"
+            f"📦 <b>Состав заказа:</b>\n{items_summary}\n\n"
+            f"💰 Итого: <b>{total_amount:,.0f} {CURRENCY}</b>"
+        )
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ В работу", callback_data=f"ord_status_{order_id}_confirmed")
+        builder.button(text="💳 Оплачен", callback_data=f"ord_pay_{order_id}_paid")
+        builder.button(text="📦 Выдан/Завершён", callback_data=f"ord_status_{order_id}_completed")
+        builder.button(text="❌ Отменить", callback_data=f"ord_status_{order_id}_cancelled")
+        builder.adjust(2, 2)
+
+        for staff_id in staff_list:
+            try:
+                await bot.send_message(staff_id, staff_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+            except Exception:
+                logger.warning("Не удалось отправить уведомление о заказе сотруднику %s", staff_id)
+    except Exception:
+        logger.exception("Ошибка при отправке уведомлений сотрудникам о заказе #%s", order_id)
+
+    # 2. Подтверждение клиенту в личный чат Telegram
+    if user_id and user_id > 0:
+        try:
+            if delivery_method == "pickup":
+                delivery_info = (
+                    f"🏬 <b>Способ получения:</b> {del_label}\n"
+                    f"📍 <b>Адрес склада:</b> <code>{html.escape(WAREHOUSE_ADDRESS)}</code>\n"
+                    f"🕐 <b>Режим работы:</b> <i>{html.escape(WAREHOUSE_HOURS)}</i>\n"
+                    f"📞 <b>Дежурный кладовщик:</b> <code>{html.escape(WAREHOUSE_PHONE)}</code>\n"
+                    f'🗺️ <a href="{html.escape(WAREHOUSE_GEO_LINK)}">Открыть схему проезда на карте</a>\n'
+                )
+            else:
+                delivery_info = (
+                    f"🚚 <b>Способ доставки:</b> {del_label}\n"
+                    f"📍 <b>Адрес назначения:</b> <code>{html.escape(delivery_address or '—')}</code>\n"
+                )
+
+            if payment_method == "sbp":
+                payment_info = (
+                    f"⚡ <b>Способ оплаты:</b> {pay_label}\n"
+                    f"🏦 <b>Банк:</b> <b>{html.escape(PAYMENT_REQUISITES['bank'])}</b>\n"
+                    f"📱 <b>Телефон СБП:</b> <code>{html.escape(PAYMENT_REQUISITES['phone'])}</code>\n"
+                    f"👤 <b>Получатель:</b> <b>{html.escape(PAYMENT_REQUISITES['receiver'])}</b>\n"
+                    f"💰 <b>Сумма к переводу:</b> <b>{total_amount:,.0f} {CURRENCY}</b>\n"
+                    f"<i>📸 После перевода отправьте снимок экрана (чек) ответным сообщением менеджеру в чат.</i>\n"
+                )
+            else:
+                payment_info = (
+                    f"💵 <b>Способ оплаты:</b> {pay_label}\n"
+                    f"<i>Оплата производится при проверке и получении товара.</i>\n"
+                )
+
+            total_items_count = sum(int(i.get('quantity', i.get('qty', 1))) for i in items)
+            client_text = (
+                f"🎉 <b>Заказ #{order_id} успешно оформлен через Mini App!</b>\n\n"
+                f"📦 Позиций: <b>{total_items_count} шт.</b>\n"
+                f"💰 Итоговая сумма: <b>{total_amount:,.0f} {CURRENCY}</b>\n"
+                f"📞 Контакт: <code>{html.escape(contact)}</code>\n"
+                f"⏳ Статус: <b>В обработке</b>\n\n"
+                f"{delivery_info}\n"
+                f"{payment_info}\n"
+                f"Менеджер уже обрабатывает ваш заказ и свяжется с вами при необходимости!"
+            )
+            await bot.send_message(user_id, client_text, parse_mode="HTML", disable_web_page_preview=True)
+
+            if payment_method == "sbp":
+                qr_file = generate_sbp_qr(order_id, total_amount)
+                if qr_file and os.path.exists(qr_file):
+                    try:
+                        await bot.send_photo(
+                            user_id,
+                            photo=FSInputFile(qr_file),
+                            caption=(
+                                f"⚡ <b>QR-код для перевода СБП к заказу #{order_id}</b>\n"
+                                f"Отсканируйте код в приложении любого банка для оплаты."
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        logger.warning("Не удалось отправить фото QR-кода клиенту %s", user_id)
+        except Exception:
+            logger.warning("Не удалось отправить сообщение клиенту %s в чат бота", user_id)
+
+
 # ─── POST /api/order ───
 async def create_order(request: web.Request) -> web.Response:
     try:
         data = await request.json()
-        user_id = data.get("user_id")
-        user_name = data.get("user_name", "Web Client")
-        contact = data.get("contact", "")
-        notes = data.get("notes", "Заказ через Mini App")
-        items = data.get("items", [])  # [{id, quantity, price}]
-        delivery_method = data.get("delivery_method", "pickup")
-        delivery_address = data.get("delivery_address", "")
-        payment_method = data.get("payment_method", "cash")
+        user_id_raw = data.get("user_id")
+        try:
+            user_id = int(user_id_raw) if user_id_raw else 0
+        except (ValueError, TypeError):
+            user_id = 0
 
-        if not user_id or not items:
+        user_name = (
+            data.get("user_name")
+            or data.get("first_name")
+            or data.get("username")
+            or (f"Пользователь {user_id}" if user_id else "Web Client")
+        )
+        contact = str(data.get("contact", "")).strip()
+        notes = str(data.get("notes", "Заказ через Mini App")).strip()
+        items = data.get("items", [])  # [{id, quantity/qty, price}]
+        delivery_method = str(data.get("delivery_method", "pickup"))
+        delivery_address = str(data.get("delivery_address", "")).strip()
+        payment_method = str(data.get("payment_method", "cash"))
+
+        if not items:
             return web.json_response(
-                {"ok": False, "error": "user_id и items обязательны"}, status=400
+                {"ok": False, "error": "Корзина пуста (items обязательны)"}, status=400
             )
 
-        user_status = await db.get_user_status(user_id)
+        user_status = await db.get_user_status(user_id) if user_id else "retail"
         is_wholesale = user_status == "wholesale"
         calculated_total_sum = 0.0
 
         # ── Stock validation & Price calculation ────────────────────────────────
         for item in items:
             part_id = int(item.get("id", 0))
-            requested_qty = int(item.get("quantity", 0))
+            requested_qty = int(item.get("quantity", item.get("qty", 0)))
             if requested_qty <= 0:
                 return web.json_response(
                     {"ok": False, "error": f"Некорректное количество для товара {part_id}"}, status=400
@@ -171,7 +318,9 @@ async def create_order(request: web.Request) -> web.Response:
                 )
                 
             actual_price = part[4] if is_wholesale else part[3]
+            item["quantity"] = requested_qty
             item["price"] = actual_price
+            item["part_name"] = part[1]
             calculated_total_sum += float(actual_price) * requested_qty
         # ───────────────────────────────────────────────────────────────────
 
@@ -190,6 +339,25 @@ async def create_order(request: web.Request) -> web.Response:
             payment_status="unpaid",
         )
 
+        bot: Bot | None = request.app.get("bot")
+        if bot:
+            asyncio.create_task(
+                _notify_order_creation(
+                    bot=bot,
+                    order_id=order_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    contact=contact,
+                    delivery_method=delivery_method,
+                    delivery_address=delivery_address,
+                    payment_method=payment_method,
+                    payment_status="unpaid",
+                    notes=notes,
+                    items=items,
+                    total_amount=total_sum,
+                )
+            )
+
         return web.json_response({"ok": True, "order_id": order_id})
     except Exception:
         logger.exception("Error creating order")
@@ -197,8 +365,9 @@ async def create_order(request: web.Request) -> web.Response:
 
 
 # ─── Setup ───
-async def setup_webapp() -> web.AppRunner:
+async def setup_webapp(bot: Bot | None = None) -> web.AppRunner:
     app = web.Application(middlewares=[cors_middleware])
+    app["bot"] = bot
 
     # OPTIONS pre-flight for CORS
     app.router.add_route("OPTIONS", "/api/{path_info:.*}", options_handler)
