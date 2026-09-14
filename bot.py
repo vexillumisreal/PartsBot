@@ -12,9 +12,10 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 import db
-from config import BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, ADMIN_IDS, WEBAPP_URL
 from handlers import common, catalog, stock, admin, roles, orders
 from webapp import setup_webapp
 
@@ -54,6 +55,10 @@ async def on_startup() -> None:
 
     global web_runner
     web_runner = await setup_webapp()
+
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(text="📱 Каталог", web_app=WebAppInfo(url=WEBAPP_URL))
+    )
 
     me = await bot.get_me()
     logger.info("Бот успешно запущен: @%s (id=%s)", me.username, me.id)
