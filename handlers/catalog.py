@@ -444,6 +444,16 @@ async def notify_stock_cb(callback: types.CallbackQuery) -> None:
 # ─────────────────── ПОИСК С ПАГИНАЦИЕЙ ───────────────────
 
 
+@router.message(F.text.startswith("/search"))
+async def direct_search(message: types.Message, state: FSMContext) -> None:
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await start_search(message, state)
+        return
+    query = parts[1].strip()
+    await render_search_results(message, query, page=0)
+
+
 @router.message(F.text == "🔍 Поиск")
 @router.callback_query(F.data == "catalog_start_search")
 async def start_search(target: types.Message | types.CallbackQuery, state: FSMContext) -> None:

@@ -58,6 +58,58 @@ async def get_catalog(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
 
 
+# ─── GET /api/brands ───
+async def get_api_brands(request: web.Request) -> web.Response:
+    try:
+        brands = await db.get_brands()
+        return web.json_response({"ok": True, "brands": [{"name": b[0], "count": b[1]} for b in brands]})
+    except Exception:
+        logger.exception("Error fetching brands")
+        return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
+
+
+# ─── GET /api/models ───
+async def get_api_models(request: web.Request) -> web.Response:
+    try:
+        brand = request.query.get("brand", "")
+        if not brand:
+            return web.json_response({"ok": False, "error": "Brand is required"}, status=400)
+        models = await db.get_models_by_brand(brand)
+        return web.json_response({"ok": True, "models": [{"name": m[0], "count": m[1]} for m in models]})
+    except Exception:
+        logger.exception("Error fetching models")
+        return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
+
+
+# ─── GET /api/parts ───
+async def get_api_parts(request: web.Request) -> web.Response:
+    try:
+        brand = request.query.get("brand", "")
+        model = request.query.get("model", "")
+        if not brand or not model:
+            return web.json_response({"ok": False, "error": "Brand and model are required"}, status=400)
+        
+        parts, total_count = await db.get_parts_by_brand_model_type(brand, model, None, 0, 1000)
+        
+        catalog_list = [
+            {
+                "id": p[0],
+                "name": p[1],
+                "retail_price": p[2],
+                "wholesale_price": p[3],
+                "quantity": p[4],
+                "part_type": p[5],
+                "category": brand,
+                "subcategory": model,
+            }
+            for p in parts
+        ]
+        return web.json_response({"ok": True, "parts": catalog_list, "total": total_count})
+    except Exception:
+        logger.exception("Error fetching parts")
+        return web.json_response({"ok": False, "error": "Internal server error"}, status=500)
+
+
 # ─── GET /api/user_status ───
 async def get_user_status(request: web.Request) -> web.Response:
     """Returns wholesale/retail status for a given Telegram user ID."""
@@ -152,6 +204,9 @@ async def setup_webapp() -> web.AppRunner:
     app.router.add_route("OPTIONS", "/api/{path_info:.*}", options_handler)
 
     app.router.add_get("/api/catalog", get_catalog)
+    app.router.add_get("/api/brands", get_api_brands)
+    app.router.add_get("/api/models", get_api_models)
+    app.router.add_get("/api/parts", get_api_parts)
     app.router.add_get("/api/user_status", get_user_status)
     app.router.add_post("/api/order", create_order)
 

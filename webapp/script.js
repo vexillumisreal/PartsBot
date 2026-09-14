@@ -1,363 +1,527 @@
 const tg = window.Telegram.WebApp;
-tg.expand(); // Expand to full height
+tg.expand();
+tg.ready();
 
-let catalog = [];
-let cart = JSON.parse(localStorage.getItem("tg_partsbot_cart")) || {}; // { id: { item, qty } }
-let isWholesale = false;
-
-const DOM = {
-    search: document.getElementById("search-input"),
-    catalogList: document.getElementById("catalog-list"),
-    loading: document.getElementById("loading"),
-    viewCatalog: document.getElementById("view-catalog"),
-    viewCart: document.getElementById("view-cart"),
-    viewSuccess: document.getElementById("view-success"),
-    btnCart: document.getElementById("btn-cart"),
-    cartBadge: document.getElementById("cart-badge"),
-    headerTitle: document.getElementById("header-title"),
-    cartItems: document.getElementById("cart-items"),
-    cartTotal: document.getElementById("cart-total"),
-
-    // Form
-    deliveryMethod: document.getElementById("delivery_method"),
-    deliveryAddressWrapper: document.getElementById("delivery_address_wrapper"),
-    deliveryAddress: document.getElementById("delivery_address"),
-    contact: document.getElementById("contact"),
-    paymentMethod: document.getElementById("payment_method"),
-    notes: document.getElementById("notes"),
+const State = {
+    view: 'catalog', // 'catalog', 'cart', 'success'
+    level: 'brands', // 'brands', 'models', 'parts'
+    currentBrand: null,
+    currentModel: null,
+    searchQuery: '',
+    cart: [],
+    userStatus: 'retail' // default, will be fetched
 };
 
-// Listeners
-DOM.search.addEventListener("input", debounce(loadCatalog, 300));
-DOM.btnCart.addEventListener("click", toggleCart);
-DOM.deliveryMethod.addEventListener("change", (e) => {
-    DOM.deliveryAddressWrapper.style.display = e.target.value !== "pickup" ? "block" : "none";
-});
+// DOM Elements
+const els = {
+    viewCatalog: document.getElementById('view-catalog'),
+    viewCart: document.getElementById('view-cart'),
+    viewSuccess: document.getElementById('view-success'),
+    catalogList: document.getElementById('catalog-list'),
+    loading: document.getElementById('loading'),
+    btnCart: document.getElementById('btn-cart'),
+    cartBadge: document.getElementById('cart-badge'),
+    btnBack: document.getElementById('btn-back'),
+    headerTitle: document.getElementById('header-title'),
+    searchContainer: document.getElementById('search-container'),
+    searchInput: document.getElementById('search-input'),
+    btnClearSearch: document.getElementById('btn-clear-search'),
+    breadcrumbs: document.getElementById('breadcrumbs'),
+    deliveryMethod: document.getElementById('delivery_method'),
+    deliveryAddressWrapper: document.getElementById('delivery_address_wrapper')
+};
 
-// Setup TG Main Button
-tg.MainButton.textColor = "#ffffff";
-tg.MainButton.color = "#2ce566";
-
-// ─── View management ───
-let currentView = "catalog";
-
-function showView(viewId) {
-    currentView = viewId;
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    document.getElementById("view-" + viewId).classList.add("active");
+// Initialize
+async function init() {
+    setupEventListeners();
+    await fetchUserStatus();
+    await loadBrands();
 }
 
-function toggleCart() {
-    if (currentView === "catalog") {
-        showView("cart");
-        DOM.headerTitle.innerText = "Оформление";
-        DOM.btnCart.style.display = "none";
-        renderCart();
+function setupEventListeners() {
+    els.btnCart.addEventListener('click', () => {
+        if (State.view === 'catalog') {
+            showCart();
+        } else {
+            showCatalog();
+        }
+    });
 
+    els.btnBack.addEventListener('click', goBack);
+
+    els.searchInput.addEventListener('input', (e) => {
+        State.searchQuery = e.target.value.toLowerCase().trim();
+        els.btnClearSearch.style.display = State.searchQuery ? 'block' : 'none';
+        
+        // Use debounce in a real app, keeping simple here
+        if (State.searchTimeout) clearTimeout(State.searchTimeout);
+        State.searchTimeout = setTimeout(() => {
+            if (State.level === 'parts') {
+                renderParts(); // local filter
+            } else if (State.searchQuery.length >= 3) {
+                // If searching from brands/models, we might want to do a global search.
+                // For now, we will just restrict local search to parts view.
+                // Or we can fetch global parts. Let's do a global part search if length >= 3
+                searchGlobalParts(State.searchQuery);
+            } else if (State.searchQuery.length === 0) {
+                // Return to current level
+                if (State.level === 'brands') loadBrands();
+                else if (State.level === 'models') loadModels(State.currentBrand);
+            }
+        }, 300);
+    });
+
+    els.btnClearSearch.addEventListener('click', () => {
+        els.searchInput.value = '';
+        State.searchQuery = '';
+        els.btnClearSearch.style.display = 'none';
+        if (State.level === 'brands') loadBrands();
+        else if (State.level === 'models') loadModels(State.currentBrand);
+        else if (State.level === 'parts') renderParts();
+    });
+
+    els.deliveryMethod.addEventListener('change', (e) => {
+        els.deliveryAddressWrapper.style.display = e.target.value === 'pickup' ? 'none' : 'block';
+    });
+
+    tg.onEvent('mainButtonClicked', submitOrder);
+}
+
+// Navigation & Routing
+function updateHeader() {
+    if (State.view === 'cart') {
+        els.headerTitle.textContent = 'Корзина';
+        els.btnBack.style.display = 'flex';
+        els.btnCart.style.display = 'none';
+        els.searchContainer.style.display = 'none';
+        els.breadcrumbs.style.display = 'none';
         tg.MainButton.text = "ОФОРМИТЬ ЗАКАЗ";
         tg.MainButton.show();
-        // Always remove before adding to prevent duplicate listeners (BUG FIX)
-        tg.offEvent("mainButtonClicked", submitOrder);
-        tg.onEvent("mainButtonClicked", submitOrder);
-        tg.BackButton.show();
-        tg.offEvent("backButtonClicked", showCatalog);
-        tg.onEvent("backButtonClicked", showCatalog);
+    } else if (State.view === 'success') {
+        els.headerTitle.textContent = 'Успешно';
+        els.btnBack.style.display = 'none';
+        els.btnCart.style.display = 'none';
+        els.searchContainer.style.display = 'none';
+        els.breadcrumbs.style.display = 'none';
+        tg.MainButton.hide();
+    } else {
+        els.btnCart.style.display = 'flex';
+        els.searchContainer.style.display = 'block';
+        updateCartBadge();
+        
+        if (State.level === 'brands') {
+            els.headerTitle.textContent = 'Каталог';
+            els.btnBack.style.display = 'none';
+            els.breadcrumbs.style.display = 'none';
+        } else {
+            els.btnBack.style.display = 'flex';
+            els.headerTitle.textContent = State.level === 'models' ? State.currentBrand : State.currentModel;
+            renderBreadcrumbs();
+        }
+        
+        tg.MainButton.hide();
+    }
+}
+
+function renderBreadcrumbs() {
+    els.breadcrumbs.style.display = 'flex';
+    let html = `<span class="breadcrumb-item" onclick="loadBrands()">Каталог</span>`;
+    
+    if (State.currentBrand) {
+        html += `<span class="breadcrumb-separator">›</span>`;
+        if (State.level === 'models') {
+            html += `<span class="breadcrumb-current">${State.currentBrand}</span>`;
+        } else {
+            html += `<span class="breadcrumb-item" onclick="loadModels('${State.currentBrand}')">${State.currentBrand}</span>`;
+        }
+    }
+    
+    if (State.currentModel && State.level === 'parts') {
+        html += `<span class="breadcrumb-separator">›</span>`;
+        html += `<span class="breadcrumb-current">${State.currentModel}</span>`;
+    }
+    
+    els.breadcrumbs.innerHTML = html;
+}
+
+function goBack() {
+    if (State.view === 'cart') {
+        showCatalog();
+    } else if (State.view === 'catalog') {
+        if (State.level === 'parts') {
+            loadModels(State.currentBrand);
+        } else if (State.level === 'models') {
+            loadBrands();
+        }
     }
 }
 
 function showCatalog() {
-    showView("catalog");
-    DOM.headerTitle.innerText = "Каталог";
-    updateCartBadge();
-
-    tg.MainButton.hide();
-    tg.offEvent("mainButtonClicked", submitOrder);
-    tg.BackButton.hide();
-    tg.offEvent("backButtonClicked", showCatalog);
+    State.view = 'catalog';
+    els.viewCatalog.classList.add('active');
+    els.viewCart.classList.remove('active');
+    els.viewSuccess.classList.remove('active');
+    updateHeader();
 }
 
-// ─── Fetch & Render ───
-async function loadCatalog() {
-    DOM.loading.style.display = "block";
-    DOM.catalogList.innerHTML = "";
+function showCart() {
+    State.view = 'cart';
+    els.viewCatalog.classList.remove('active');
+    els.viewCart.classList.add('active');
+    els.viewSuccess.classList.remove('active');
+    renderCart();
+    updateHeader();
+}
 
-    const query = DOM.search.value;
+function showSuccess(orderId) {
+    State.view = 'success';
+    els.viewCatalog.classList.remove('active');
+    els.viewCart.classList.remove('active');
+    els.viewSuccess.classList.add('active');
+    document.getElementById('success-order-id').textContent = orderId;
+    updateHeader();
+    
+    // Clear cart
+    State.cart = [];
+    saveCart();
+    updateCartBadge();
+}
+
+// Data Fetching
+async function fetchUserStatus() {
     try {
-        const res = await fetch(`/api/catalog?q=${encodeURIComponent(query)}&limit=200`);
-        // BUG FIX: check res.ok before calling res.json()
-        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        const userId = tg.initDataUnsafe?.user?.id || 0;
+        const res = await fetch(`/api/user_status?user_id=${userId}`);
         const data = await res.json();
-
-        if (data.ok) {
-            catalog = data.parts;
-            renderCatalog();
-        } else {
-            throw new Error(data.error || "Unknown error");
-        }
+        if (data.ok) State.userStatus = data.status;
     } catch (e) {
-        console.error("loadCatalog error:", e);
-        DOM.catalogList.innerHTML =
-            '<p style="text-align:center;color:var(--hint-color);">&#9888;&#65039; Ошибка загрузки. Попробуйте ещё раз.</p>';
-    } finally {
-        DOM.loading.style.display = "none";
+        console.error('Failed to fetch user status', e);
     }
 }
 
-// BUG FIX: format prices properly with Russian locale
-function fmt(price) {
-    return Number(price).toLocaleString("ru-RU");
+function showLoading(show) {
+    els.loading.style.display = show ? 'flex' : 'none';
+    if (show) els.catalogList.innerHTML = '';
 }
 
-// BUG FIX: prevent XSS from product names / categories
-function escapeHtml(str) {
-    return String(str || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
+async function loadBrands() {
+    State.level = 'brands';
+    State.currentBrand = null;
+    State.currentModel = null;
+    els.searchInput.value = '';
+    State.searchQuery = '';
+    els.btnClearSearch.style.display = 'none';
+    updateHeader();
+    showLoading(true);
+    
+    try {
+        const res = await fetch('/api/brands');
+        const data = await res.json();
+        if (data.ok) {
+            renderBrands(data.brands);
+        }
+    } catch (e) {
+        console.error(e);
+        els.catalogList.innerHTML = '<div class="empty-state">Ошибка загрузки.</div>';
+    }
+    showLoading(false);
 }
 
-function renderCatalog() {
-    DOM.catalogList.innerHTML = "";
+async function loadModels(brand) {
+    State.level = 'models';
+    State.currentBrand = brand;
+    State.currentModel = null;
+    els.searchInput.value = '';
+    State.searchQuery = '';
+    els.btnClearSearch.style.display = 'none';
+    updateHeader();
+    showLoading(true);
+    
+    try {
+        const res = await fetch(`/api/models?brand=${encodeURIComponent(brand)}`);
+        const data = await res.json();
+        if (data.ok) {
+            renderModels(data.models);
+        }
+    } catch (e) {
+        console.error(e);
+    }
+    showLoading(false);
+}
 
-    if (catalog.length === 0) {
-        DOM.catalogList.innerHTML =
-            '<p style="text-align:center;color:var(--hint-color);">Ничего не найдено</p>';
+async function loadParts(brand, model) {
+    State.level = 'parts';
+    State.currentBrand = brand;
+    State.currentModel = model;
+    els.searchInput.value = '';
+    State.searchQuery = '';
+    els.btnClearSearch.style.display = 'none';
+    updateHeader();
+    showLoading(true);
+    
+    try {
+        const res = await fetch(`/api/parts?brand=${encodeURIComponent(brand)}&model=${encodeURIComponent(model)}`);
+        const data = await res.json();
+        if (data.ok) {
+            State.currentParts = data.parts; // cache for local search
+            renderParts();
+        }
+    } catch (e) {
+        console.error(e);
+    }
+    showLoading(false);
+}
+
+async function searchGlobalParts(query) {
+    State.level = 'search';
+    updateHeader();
+    showLoading(true);
+    
+    try {
+        const res = await fetch(`/api/catalog?q=${encodeURIComponent(query)}&page=1&limit=100`);
+        const data = await res.json();
+        if (data.ok) {
+            State.currentParts = data.parts;
+            renderParts(true); // true = show brand/model context
+        }
+    } catch (e) {
+        console.error(e);
+    }
+    showLoading(false);
+}
+
+// Rendering
+function renderBrands(brands) {
+    if (brands.length === 0) {
+        els.catalogList.innerHTML = '<div class="empty-state">Бренды не найдены</div>';
+        return;
+    }
+    
+    els.catalogList.innerHTML = brands.map(b => `
+        <div class="brand-card" onclick="loadModels('${b.name}')">
+            <h3 class="card-title">${b.name}</h3>
+            <span class="card-subtitle">${b.count} моделей</span>
+        </div>
+    `).join('');
+}
+
+function renderModels(models) {
+    if (models.length === 0) {
+        els.catalogList.innerHTML = '<div class="empty-state">Модели не найдены</div>';
+        return;
+    }
+    
+    els.catalogList.innerHTML = models.map(m => `
+        <div class="model-card" onclick="loadParts('${State.currentBrand}', '${m.name}')">
+            <h3 class="card-title">${m.name}</h3>
+            <span class="card-subtitle">${m.count} запчастей</span>
+        </div>
+    `).join('');
+}
+
+function renderParts(showContext = false) {
+    let parts = State.currentParts || [];
+    
+    if (State.searchQuery) {
+        parts = parts.filter(p => p.name.toLowerCase().includes(State.searchQuery));
+    }
+
+    if (parts.length === 0) {
+        els.catalogList.innerHTML = `
+            <div class="empty-state">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <p>Ничего не найдено</p>
+            </div>
+        `;
         return;
     }
 
-    catalog.forEach((part) => {
-        const card = document.createElement("div");
-        card.className = "part-card";
-
-        // BUG FIX: use wholesale price when user has wholesale status
-        const price =
-            isWholesale && part.wholesale_price > 0 ? part.wholesale_price : part.retail_price;
-        const cartItem = cart[part.id];
-        const qty = cartItem ? cartItem.qty : 0;
-        const outOfStock = part.quantity <= 0;
-
-        // UX IMPROVEMENT: visually dim out-of-stock cards
-        if (outOfStock) {
-            card.classList.add("out-of-stock");
-        }
-
-        let controlsHTML = "";
-        if (outOfStock) {
-            controlsHTML = `<button class="add-to-cart-btn out-of-stock-btn" disabled>Нет в наличии</button>`;
-        } else if (qty > 0) {
-            controlsHTML = `
-                <div class="quantity-controls">
-                    <button class="qty-btn" onclick="updateCart(${part.id}, -1)">&minus;</button>
-                    <span>${qty}</span>
-                    <button class="qty-btn" onclick="updateCart(${part.id}, 1)">+</button>
-                </div>`;
-        } else {
-            controlsHTML = `<button class="add-to-cart-btn" onclick="updateCart(${part.id}, 1)">Добавить</button>`;
-        }
-
-        card.innerHTML = `
-            <div class="part-title">${escapeHtml(part.name)}</div>
-            <div class="part-meta">${escapeHtml(part.category)} › ${escapeHtml(part.subcategory || "")}</div>
-            <div class="part-meta">Остаток: ${outOfStock ? '<span class="no-stock">нет</span>' : part.quantity + " шт."}</div>
-            <div class="part-price-row">
-                <div class="price">${fmt(price)} ₽</div>
-                ${controlsHTML}
-            </div>`;
-        DOM.catalogList.appendChild(card);
-    });
+    els.catalogList.innerHTML = parts.map(p => {
+        const price = State.userStatus === 'wholesale' ? p.wholesale_price : p.retail_price;
+        const retailHtml = State.userStatus === 'wholesale' ? `<span class="retail-price">${p.retail_price} ₽</span>` : '';
+        const cartItem = State.cart.find(item => item.id === p.id);
+        const contextHtml = showContext ? `<div class="part-meta">${p.category} &gt; ${p.subcategory}</div>` : '';
+        
+        return `
+            <div class="part-card">
+                <div>
+                    <h3 class="part-name">${p.name}</h3>
+                    ${contextHtml}
+                    <div class="part-meta">В наличии: ${p.quantity} шт.</div>
+                </div>
+                <div class="part-price-row">
+                    <div class="part-price">${price} ₽${retailHtml}</div>
+                </div>
+                ${cartItem 
+                    ? `<div class="quantity-control">
+                        <button class="qty-btn" onclick="updateQty(${p.id}, -1)">-</button>
+                        <span class="qty-val">${cartItem.qty}</span>
+                        <button class="qty-btn" onclick="updateQty(${p.id}, 1)">+</button>
+                       </div>`
+                    : `<button class="add-to-cart-btn" ${p.quantity === 0 ? 'disabled' : ''} onclick='addToCart(${JSON.stringify(p).replace(/'/g, "&apos;")})'>
+                        В корзину
+                       </button>`
+                }
+            </div>
+        `;
+    }).join('');
 }
 
-window.updateCart = function (id, delta) {
-    let part = catalog.find((p) => p.id == id);
-    if (!part && cart[id]) {
-        part = cart[id].item;
+// Cart Logic
+function addToCart(part) {
+    if (part.quantity <= 0) return;
+    State.cart.push({ ...part, qty: 1 });
+    saveCart();
+    renderParts(State.level === 'search');
+    updateCartBadge();
+    tg.HapticFeedback.impactOccurred('light');
+}
+
+function updateQty(id, delta) {
+    const item = State.cart.find(i => i.id === id);
+    if (!item) return;
+    
+    item.qty += delta;
+    
+    if (item.qty > item.quantity) {
+        item.qty = item.quantity;
+        tg.HapticFeedback.notificationOccurred('warning');
+    } else if (item.qty <= 0) {
+        State.cart = State.cart.filter(i => i.id !== id);
+    } else {
+        tg.HapticFeedback.impactOccurred('light');
     }
-    if (!part) return;
-
-    if (!cart[id]) {
-        cart[id] = { item: part, qty: 0 };
-    }
-
-    cart[id].qty += delta;
-
-    if (cart[id].qty > part.quantity) {
-        cart[id].qty = part.quantity;
-        tg.showAlert("На складе всего " + part.quantity + " шт.");
-    }
-
-    if (cart[id].qty <= 0) {
-        delete cart[id];
-    }
-
-    localStorage.setItem("tg_partsbot_cart", JSON.stringify(cart));
-
-    if (currentView === "catalog") {
-        renderCatalog();
-        updateCartBadge();
-    } else if (currentView === "cart") {
-        renderCart();
-        updateCartBadge();
-    }
-};
+    
+    saveCart();
+    if (State.view === 'cart') renderCart();
+    else renderParts(State.level === 'search');
+    updateCartBadge();
+}
 
 function updateCartBadge() {
-    const count = Object.keys(cart).length;
-    if (count > 0) {
-        DOM.btnCart.style.display = "block";
-        DOM.cartBadge.innerText = count;
-    } else {
-        DOM.btnCart.style.display = "none";
-    }
+    const totalQty = State.cart.reduce((sum, item) => sum + item.qty, 0);
+    els.cartBadge.textContent = totalQty;
+    els.cartBadge.style.display = totalQty > 0 ? 'block' : 'none';
+}
+
+function saveCart() {
+    try {
+        localStorage.setItem('partsbot_cart', JSON.stringify(State.cart));
+    } catch (e) {}
+}
+
+function loadCart() {
+    try {
+        const saved = localStorage.getItem('partsbot_cart');
+        if (saved) State.cart = JSON.parse(saved);
+        updateCartBadge();
+    } catch (e) {}
 }
 
 function renderCart() {
-    DOM.cartItems.innerHTML = "";
-    let total = 0;
-
-    const ids = Object.keys(cart);
-    if (ids.length === 0) {
-        DOM.cartItems.innerHTML = "<p>Корзина пуста</p>";
-        DOM.cartTotal.innerText = "0 ₽";
+    const cartList = document.getElementById('cart-items');
+    
+    if (State.cart.length === 0) {
+        cartList.innerHTML = `
+            <div class="empty-state">
+                <p>Корзина пуста</p>
+                <button class="add-to-cart-btn" style="width: auto; margin-top: 16px;" onclick="showCatalog()">Перейти в каталог</button>
+            </div>
+        `;
+        document.querySelector('.checkout-form').style.display = 'none';
+        document.getElementById('cart-total').textContent = '0 ₽';
         tg.MainButton.hide();
         return;
     }
-
-    ids.forEach((id) => {
-        const c = cart[id];
-        // BUG FIX: respect wholesale pricing in cart view too
-        const price =
-            isWholesale && c.item.wholesale_price > 0 ? c.item.wholesale_price : c.item.retail_price;
-        const sum = price * c.qty;
-        total += sum;
-
-        const el = document.createElement("div");
-        el.className = "cart-item";
-        el.innerHTML = `
-            <div class="cart-item-info">
-                <h4>${escapeHtml(c.item.name)}</h4>
-                <p>${fmt(price)} ₽ &times; ${c.qty} шт. = <strong>${fmt(sum)} ₽</strong></p>
+    
+    document.querySelector('.checkout-form').style.display = 'block';
+    
+    let total = 0;
+    cartList.innerHTML = State.cart.map(item => {
+        const price = State.userStatus === 'wholesale' ? item.wholesale_price : item.retail_price;
+        total += price * item.qty;
+        
+        return `
+            <div class="cart-item glass-panel">
+                <div class="cart-item-details">
+                    <div class="cart-item-name">${item.name}</div>
+                    <div class="cart-item-price">${price} ₽</div>
+                </div>
+                <div class="cart-item-actions">
+                    <div class="quantity-control" style="width: 100px;">
+                        <button class="qty-btn" onclick="updateQty(${item.id}, -1)">-</button>
+                        <span class="qty-val">${item.qty}</span>
+                        <button class="qty-btn" onclick="updateQty(${item.id}, 1)">+</button>
+                    </div>
+                    <button class="remove-btn icon-btn" onclick="updateQty(${item.id}, -${item.qty})">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
             </div>
-            <div class="quantity-controls">
-                <button class="qty-btn" onclick="updateCart(${id}, -1)">&minus;</button>
-                <span>${c.qty}</span>
-                <button class="qty-btn" onclick="updateCart(${id}, 1)">+</button>
-            </div>`;
-        DOM.cartItems.appendChild(el);
-    });
-
-    DOM.cartTotal.innerText = `${fmt(total)} ₽`;
+        `;
+    }).join('');
+    
+    document.getElementById('cart-total').textContent = `${total} ₽`;
+    tg.MainButton.text = `ОФОРМИТЬ ЗАКАЗ НА ${total} ₽`;
     tg.MainButton.show();
 }
 
+// Order Submission
 async function submitOrder() {
-    const items = Object.values(cart).map((c) => ({
-        id: c.item.id,
-        quantity: c.qty,
-        price:
-            isWholesale && c.item.wholesale_price > 0 ? c.item.wholesale_price : c.item.retail_price,
-    }));
-
-    if (items.length === 0) return;
-
-    const userId = tg.initDataUnsafe?.user?.id || 0;
-    const userName = tg.initDataUnsafe?.user?.first_name || "Web Client";
-
-    const contact = DOM.contact.value.trim();
+    if (State.cart.length === 0) return;
+    
+    const deliveryMethod = els.deliveryMethod.value;
+    const deliveryAddress = document.getElementById('delivery_address').value;
+    const contact = document.getElementById('contact').value;
+    const paymentMethod = document.getElementById('payment_method').value;
+    const notes = document.getElementById('notes').value;
+    
     if (!contact) {
-        tg.showAlert("Укажите контактный телефон");
+        tg.showAlert('Пожалуйста, укажите контактный телефон.');
         return;
     }
-
-    const delivery = DOM.deliveryMethod.value;
-    const address = DOM.deliveryAddress.value.trim();
-    if (delivery !== "pickup" && !address) {
-        tg.showAlert("Укажите адрес доставки");
+    
+    if (deliveryMethod !== 'pickup' && !deliveryAddress) {
+        tg.showAlert('Пожалуйста, укажите адрес доставки.');
         return;
     }
-
+    
     tg.MainButton.showProgress();
-
-    const payload = {
-        user_id: userId,
-        user_name: userName,
+    
+    const orderData = {
+        user_id: tg.initDataUnsafe?.user?.id || 0,
+        username: tg.initDataUnsafe?.user?.username || '',
+        first_name: tg.initDataUnsafe?.user?.first_name || '',
+        items: State.cart,
+        delivery_method: deliveryMethod,
+        delivery_address: deliveryAddress,
         contact: contact,
-        delivery_method: delivery,
-        delivery_address: address,
-        payment_method: DOM.paymentMethod.value,
-        notes: DOM.notes.value.trim(),
-        items: items,
+        payment_method: paymentMethod,
+        notes: notes
     };
-
+    
     try {
-        const res = await fetch("/api/order", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+        const response = await fetch('/api/order', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(orderData)
         });
-
-        // BUG FIX: check HTTP status before parsing JSON
-        if (!res.ok) {
-            const text = await res.text();
-            throw new Error(`Server ${res.status}: ${text}`);
-        }
-
-        const data = await res.json();
-        if (data.ok) {
-            cart = {};
-            localStorage.removeItem("tg_partsbot_cart");
-            showView("success");
-            document.getElementById("success-order-id").innerText = data.order_id;
-            DOM.headerTitle.innerText = "Готово";
-            tg.MainButton.hide();
-            tg.BackButton.hide();
-            tg.offEvent("mainButtonClicked", submitOrder);
-
-            // Close WebApp after 5 seconds
-            setTimeout(() => {
-                tg.close();
-            }, 5000);
+        
+        const result = await response.json();
+        
+        if (result.ok) {
+            tg.HapticFeedback.notificationOccurred('success');
+            showSuccess(result.order_id);
         } else {
-            tg.showAlert("Ошибка: " + (data.error || "неизвестная ошибка"));
+            tg.showAlert('Ошибка: ' + (result.error || 'Не удалось оформить заказ.'));
         }
     } catch (e) {
-        console.error("submitOrder error:", e);
-        tg.showAlert("Сетевая ошибка при отправке. Попробуйте ещё раз.");
+        tg.showAlert('Ошибка сети. Попробуйте позже.');
     } finally {
         tg.MainButton.hideProgress();
     }
 }
 
-// ─── Fetch wholesale status from backend ───
-async function loadUserStatus() {
-    const userId = tg.initDataUnsafe?.user?.id;
-    if (!userId) return;
-    try {
-        const res = await fetch(`/api/user_status?user_id=${userId}`);
-        if (res.ok) {
-            const data = await res.json();
-            if (data.ok) {
-                isWholesale = data.status === "wholesale";
-            }
-        }
-    } catch (e) {
-        // Non-critical — default to retail pricing
-        console.warn("Could not fetch user status:", e);
-    }
-}
-
-// Utils
-function debounce(func, wait) {
-    let timeout;
-    return function (...args) {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => func.apply(this, args), wait);
-    };
-}
-
-// Init
-(async () => {
-    await loadUserStatus();
-    loadCatalog();
-    updateCartBadge();
-})();
+// Start
+loadCart();
+init();
